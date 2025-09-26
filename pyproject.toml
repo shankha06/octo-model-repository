@@ -1,0 +1,153 @@
+[project]
+name = "octo-model-repository"
+version = "0.1.0"
+description = "Welcome to the Enigma Engines."
+authors = [{ name = "Shankhadeep Roy", email = "shankharay.917@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.9, <3.10"
+license = { text = "MIT License" }
+keywords = ['python']
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "beautifulsoup4>=4.13.3",
+    "black>=25.1.0",
+    "fake-useragent>=2.1.0",
+    "matplotlib>=2.10.3",
+    "openpyxl>=3.1.5",
+    "pandas>=2.2.3",
+    "rich>=14.0.0",
+    "ruff>=0.11.0",
+    "seaborn>=0.13.2",
+    "mkdocs>=1.4.2",
+    "markdown>=3.8",
+    "pydantic>=2.11.5",
+    "typer>=0.16.0",
+    "sentence-transformers>=5.0.0",
+]
+
+
+[project.urls]
+Homepage = "https://shankha06.github.io/octo-model-repository/"
+Repository = "https://github.com/shankha06/octo-model-repository"
+Documentation = "https://shankha06.github.io/octo-model-repository/"
+
+
+[project.optional-dependencies]
+reco = [
+    "fake-useragent>=2.1.0",
+    "faker>=37.3.0",
+    "openpyxl>=3.1.5",
+    "pandas>=2.2.3",
+]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.26.0",
+    "pytest-asyncio>=0.25.3",
+    "tomli>=2.0.1",
+    "jinja2>=3.1.6",
+    "pytest>=7.2.0",
+    "pre-commit>=2.20.0",
+    "tox-uv>=1.11.3",
+    "mypy>=0.991",
+    "ruff>=0.11.5",
+    "torch>=2.7.0",
+    "scikit-learn>=1.6.1",
+    "matplotlib>=2.10.3",
+    "ipykernel>=6.29.5",
+    "datasets>=3.6.0",
+    "huggingface>=0.0.1",
+    "transformers[torch]>=4.51.3",
+    "jupyter-contrib-nbextensions>=0.7.0",
+    "sentence-transformers>=5.0.0",
+    "huggingface-hub[hf-xet]>=0.32.4",
+]
+infra = [
+    "boto3>=1.38.24",
+    "opensearch-py>=2.8.0",
+]
+
+[tool.setuptools]
+# No package-dir needed for flat layout if packages are in root
+packages = ["model_repository"]
+
+[tool.pytest.ini_options]
+testpaths = ["api/tests", "ui/tests"]
+python_files = ["test_*.py"]
+addopts = "--cov=api --cov=ui --cov-report=term-missing --cov-config=.coveragerc --full-trace" 
+asyncio_mode = "auto"
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["model_repository"]
+
+[tool.mypy]
+files = ["model_repository"]
+disallow_untyped_defs = true
+disallow_any_unimported = true
+no_implicit_optional = true
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+fix = true
+
+[tool.ruff.lint]
+select = [
+    # flake8-2020
+    "YTT",
+    # flake8-bandit
+    "S",
+    # flake8-bugbear
+    "B",
+    # flake8-builtins
+    "A",
+    # flake8-comprehensions
+    "C4",
+    # flake8-debugger
+    "T10",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+    # mccabe
+    "C90",
+    # pycodestyle
+    "E", "W",
+    # pyflakes
+    "F",
+    # pygrep-hooks
+    "PGH",
+    # pyupgrade
+    "UP",
+    # ruff
+    "RUF",
+    # tryceratops
+    "TRY",
+]
+ignore = [
+    # LineTooLong
+    "E501",
+    # DoNotAssignLambda
+    "E731",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.format]
+preview = true
