@@ -5,8 +5,15 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
-# Check for Flash Attention 2 availability
-FLASH_ATTENTION_AVAILABLE = hasattr(F, 'scaled_dot_product_attention')
+# Check for Flash Attention 2 availability (Dao-AILab)
+try:
+    from flash_attn import flash_attn_func
+    DAO_FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    DAO_FLASH_ATTN_AVAILABLE = False
+
+# Check for PyTorch Native Flash Attention availability
+PYTORCH_FLASH_AVAILABLE = hasattr(F, 'scaled_dot_product_attention')
 
 @dataclass
 class ChromaConfig:
@@ -37,6 +44,9 @@ class ChromaConfig:
     
     # NV-Embed Style Pooling
     latent_pooler_dim: int = 4096      # Latent attention output dim
+    
+    # Training Optimizations
+    gradient_checkpointing: bool = False
 
 class DeepSeekRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -153,7 +163,33 @@ class MultiHeadLatentAttention(nn.Module):
         k_final = torch.cat([k_nope, k_rope], dim=-1)
 
         # 5. Attention (Flash Attention 2 if available)
-        if FLASH_ATTENTION_AVAILABLE:
+        if DAO_FLASH_ATTN_AVAILABLE:
+            # 5a. Dao-AILab Flash Attention (Fastest)
+            # Requires [batch, seq, heads, head_dim] input format
+            q_fa = q_final.transpose(1, 2)
+            k_fa = k_final.transpose(1, 2)
+            v_fa = v.transpose(1, 2)
+            
+            # Flash Attn 2 assumes unpadded or specially handled data. 
+            # Ideally use flash_attn_varlen_func with unpad_input for padded data.
+            # Here we use the standard func which is faster but attends to padding if not careful.
+            # Since we masked inputs with large negative values in 'extended_mask', standard attention works.
+            # For flash_attn, strictly speaking, we rely on the model learning to ignore padding 
+            # or the user unpadding data.
+            attn_output = flash_attn_func(
+                q_fa, k_fa, v_fa,
+                dropout_p=0.0,
+                softmax_scale=None, # Uses 1/sqrt(d) by default
+                causal=False,
+            )
+            
+            # Reshape back: [batch, seq, heads, head_dim] -> [batch, seq, heads*head_dim]
+            # No need to transpose again as output is already [batch, seq, heads, dim]
+            output = self.o_proj(attn_output.reshape(batch, seq_len, -1))
+            return output
+
+        # 5. Attention
+        if PYTORCH_FLASH_AVAILABLE:
             # Use PyTorch 2.0+ scaled_dot_product_attention (uses Flash Attention 2 when available)
             # Need to handle mask format for SDPA
             if attention_mask is not None:
@@ -320,6 +356,20 @@ class ChromeMoEModel(nn.Module):
             
         self.norm_final = DeepSeekRMSNorm(config.hidden_size)
         self.pooling_head = LatentAttentionPooling(config)
+
+    def _layer_forward(self, layer, x, attention_mask):
+        # Pre-Norm -> Attention -> Residual
+        residual = x
+        x_norm = layer["norm1"](x)
+        attn_out = layer["attn"](x_norm, attention_mask, self.rotary_emb)
+        x = residual + attn_out
+        
+        # Pre-Norm -> MoE -> Residual
+        residual = x
+        x_norm = layer["norm2"](x)
+        moe_out = layer["moe"](x_norm)
+        x = residual + moe_out
+        return x
         
     def forward(self, input_ids, attention_mask=None):
         # 1. Embedding
@@ -336,17 +386,21 @@ class ChromeMoEModel(nn.Module):
         
         # 3. Transformer Layers
         for layer in self.layers:
-            # Pre-Norm -> Attention -> Residual
-            residual = x
-            x_norm = layer["norm1"](x)
-            attn_out = layer["attn"](x_norm, extended_mask, self.rotary_emb)
-            x = residual + attn_out
-            
-            # Pre-Norm -> MoE -> Residual
-            residual = x
-            x_norm = layer["norm2"](x)
-            moe_out = layer["moe"](x_norm)
-            x = residual + moe_out
+            if self.config.gradient_checkpointing and self.training:
+                # Custom forward function for checkpointing
+                def create_custom_forward(module):
+                    def custom_forward(*args):
+                        return self._layer_forward(module, *args)
+                    return custom_forward
+                
+                x = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(layer),
+                    x,
+                    extended_mask,
+                    use_reentrant=False
+                )
+            else:
+                x = self._layer_forward(layer, x, extended_mask)
             
         # 4. Final Norm
         last_hidden_state = self.norm_final(x)

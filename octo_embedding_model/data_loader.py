@@ -95,7 +95,9 @@ class SpanMaskingCollator:
 
     def _generate_span_mask(self, seq_length: int) -> list[tuple[int, int]]:
         """Generate random spans to mask."""
-        num_tokens_to_mask = int(seq_length * self.mask_ratio)
+        # Dynamic mask ratio: random between 0.05 and self.mask_ratio
+        current_ratio = random.uniform(0.05, self.mask_ratio)
+        num_tokens_to_mask = int(seq_length * current_ratio)
         spans = []
         masked_count = 0
 
@@ -713,6 +715,7 @@ def load_ecomniverse(
 
 def create_combined_pretraining_dataset(
     config: dict[str, Any],
+    tokenizer: PreTrainedTokenizer | None = None,
     debug: bool = False,
 ) -> PreTrainingDataset:
     """
@@ -761,6 +764,19 @@ def create_combined_pretraining_dataset(
     random.shuffle(all_texts)
 
     print(f"\n=== Total pre-training samples: {len(all_texts):,} ===")
+
+    if tokenizer:
+        print("Calculating total tokens...")
+        total_tokens = 0
+        batch_size = 1000
+        for i in range(0, len(all_texts), batch_size):
+            batch = all_texts[i : i + batch_size]
+            encodings = tokenizer(batch, add_special_tokens=False, verbose=False)
+            total_tokens += sum(len(ids) for ids in encodings["input_ids"])
+            if i % 100000 == 0 and i > 0:
+                print(f"  Counted tokens for {i:,} samples...")
+        
+        print(f"=== Total pre-training tokens: {total_tokens:,} ===")
 
     return PreTrainingDataset(all_texts)
 

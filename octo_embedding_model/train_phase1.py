@@ -173,6 +173,7 @@ def create_model_from_config(
         rms_norm_eps=model_config.get("rms_norm_eps", 1e-6),
         rope_theta=model_config.get("rope_theta", 10000.0),
         latent_pooler_dim=model_config.get("latent_pooler_dim", 512),
+        gradient_checkpointing=config.get("training", {}).get("gradient_checkpointing", False),
     )
 
     return ChromaMoEForPretraining(chroma_config)
@@ -407,6 +408,12 @@ def main():
     if rank == 0:
         total_params = sum(p.numel() for p in model.parameters())
         logger.info(f"Total parameters: {total_params / 1e6:.2f}M")
+        
+    # Enable torch.compile for faster training (PyTorch 2.0+)
+    if config.get("training", {}).get("torch_compile", True) and hasattr(torch, "compile"):
+        if rank == 0:
+            logger.info("Compiling model with torch.compile...")
+        model = torch.compile(model)
 
     # Wrap with DDP
     if is_ddp:
@@ -429,6 +436,7 @@ def main():
     else:
         dataset = create_combined_pretraining_dataset(
             config.get("data", {}),
+            tokenizer=tokenizer,
             debug=debug_mode,
         )
         sampler = DistributedSampler(dataset, shuffle=True) if is_ddp else None

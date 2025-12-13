@@ -9,7 +9,7 @@ license = { text = "MIT License" }
 keywords = ["embedding", "moe", "finance", "ecommerce", "transformers"]
 dependencies = [
     # Core ML
-    "torch>=2.0.0",
+    "torch>=2.2.0",
     "transformers>=4.40.0",
     "datasets>=3.0.0",
     "tokenizers>=0.15.0",
@@ -87,3 +87,11 @@ ignore = [
 
 [tool.ruff.format]
 preview = true
+
+[tool.uv.extra-build-dependencies]
+octo-model-repository = ["hatchling"]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = false

@@ -82,6 +82,9 @@ uv run python octo_embedding_model/train_tokenizer.py \
 Pre-train with span masking MLM on domain-specific corpora:
 
 ```bash
+chmod +x train_phase1.sh
+./train_phase1.sh
+
 # Single GPU (local testing)
 uv run python octo_embedding_model/train_phase1.py --config config.yaml
 
