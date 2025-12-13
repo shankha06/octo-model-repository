@@ -270,49 +270,146 @@ def get_edgar_iterator(
             return
 
 
-def combined_corpus_iterator(
-    ecom_samples: int | None = None,
-    edgar_samples: int | None = None,
-    mix_ratio: float = 0.5,
+def get_generic_iterator(
+    max_samples: int | None = None,
+    english_only: bool = True,
 ) -> Iterator[str]:
     """
-    Combined iterator over both datasets with specified mix ratio.
+    Iterator over generic web dataset texts.
+    
+    Uses FineWeb-Edu for high-quality educational web content.
+    """
+    logger.info("Loading generic web dataset...")
+    
+    # FineWeb-Edu dataset options
+    dataset_options = [
+        ("HuggingFaceFW/fineweb-edu", "sample-10BT"),  # 10B token sample
+        ("HuggingFaceFW/fineweb-edu", "sample-100BT"),  # 100B token sample
+    ]
+    
+    dataset = None
+    for dataset_id, subset in dataset_options:
+        try:
+            logger.info(f"Trying to load generic dataset: {dataset_id} ({subset})")
+            dataset = load_dataset(dataset_id, subset, split="train", streaming=True)
+            logger.info(f"Successfully loaded generic dataset: {dataset_id} ({subset})")
+            break
+        except Exception as e:
+            logger.warning(f"Could not load {dataset_id}/{subset}: {e}")
+            continue
+    
+    if dataset is None:
+        logger.warning("Could not load any generic dataset")
+        return
+    
+    count = 0
+    for item in dataset:
+        # FineWeb-Edu has 'text' field
+        text = item.get("text", "")
+        
+        if not text or len(text) < 100:
+            continue
+        
+        # Simple English check (ASCII ratio)
+        if english_only:
+            ascii_ratio = sum(1 for c in text if ord(c) < 128) / len(text)
+            if ascii_ratio < 0.85:
+                continue
+        
+        # For long documents, yield chunks
+        if len(text) > 5000:
+            for i in range(0, len(text), 2000):
+                chunk = text[i:i+2500]
+                if len(chunk) > 200:
+                    yield chunk
+                    count += 1
+                    if max_samples and count >= max_samples:
+                        return
+        else:
+            yield text
+            count += 1
+            
+        if max_samples and count >= max_samples:
+            return
+
+
+def combined_corpus_iterator(
+    ecom_samples: int | None = None,
+    financial_samples: int | None = None,
+    generic_samples: int | None = None,
+    ecom_ratio: float = 0.35,
+    financial_ratio: float = 0.35,
+    generic_ratio: float = 0.30,
+) -> Iterator[str]:
+    """
+    Combined iterator over all datasets with specified mix ratios.
     
     Args:
-        ecom_samples: Max samples from Ecom-niverse
-        edgar_samples: Max samples from EDGAR
-        mix_ratio: Ratio of Ecom-niverse to EDGAR (0.5 = equal mix)
+        ecom_samples: Max samples from e-commerce datasets
+        financial_samples: Max samples from financial datasets
+        generic_samples: Max samples from generic web datasets
+        ecom_ratio: Probability of sampling from e-commerce (default: 0.35)
+        financial_ratio: Probability of sampling from financial (default: 0.35)
+        generic_ratio: Probability of sampling from generic (default: 0.30)
     """
     # Create iterators
     ecom_iter = get_ecomniverse_iterator(max_samples=ecom_samples)
-    edgar_iter = get_edgar_iterator(max_samples=edgar_samples)
+    financial_iter = get_edgar_iterator(max_samples=financial_samples)
+    generic_iter = get_generic_iterator(max_samples=generic_samples)
     
     ecom_exhausted = False
-    edgar_exhausted = False
+    financial_exhausted = False
+    generic_exhausted = False
     
     import random
     
-    while not (ecom_exhausted and edgar_exhausted):
-        # Decide which source to sample from
-        if ecom_exhausted:
-            source = "edgar"
-        elif edgar_exhausted:
-            source = "ecom"
-        else:
-            source = "ecom" if random.random() < mix_ratio else "edgar"
+    while not (ecom_exhausted and financial_exhausted and generic_exhausted):
+        # Calculate active source weights
+        weights = []
+        sources = []
+        
+        if not ecom_exhausted:
+            weights.append(ecom_ratio)
+            sources.append("ecom")
+        if not financial_exhausted:
+            weights.append(financial_ratio)
+            sources.append("financial")
+        if not generic_exhausted:
+            weights.append(generic_ratio)
+            sources.append("generic")
+        
+        if not sources:
+            break
+            
+        # Normalize weights
+        total = sum(weights)
+        weights = [w/total for w in weights]
+        
+        # Select source
+        r = random.random()
+        cumulative = 0
+        source = sources[-1]
+        for s, w in zip(sources, weights):
+            cumulative += w
+            if r < cumulative:
+                source = s
+                break
         
         try:
             if source == "ecom":
                 text = next(ecom_iter)
-                yield text
+            elif source == "financial":
+                text = next(financial_iter)
             else:
-                text = next(edgar_iter)
-                yield text
+                text = next(generic_iter)
+            yield text
         except StopIteration:
             if source == "ecom":
                 ecom_exhausted = True
+            elif source == "financial":
+                financial_exhausted = True
             else:
-                edgar_exhausted = True
+                generic_exhausted = True
 
 
 def train_bpe_tokenizer(
@@ -398,8 +495,8 @@ def train_bpe_tokenizer(
     def corpus_iterator():
         yield from combined_corpus_iterator(
             ecom_samples=max_samples_per_source,
-            edgar_samples=max_samples_per_source,
-            mix_ratio=0.5,
+            financial_samples=max_samples_per_source,
+            generic_samples=max_samples_per_source,
         )
     
     tokenizer.train_from_iterator(corpus_iterator(), trainer=trainer)

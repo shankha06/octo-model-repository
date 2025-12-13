@@ -20,10 +20,7 @@ git clone https://github.com/your-org/octo-model-repository.git
 cd octo-model-repository
 
 # Install with uv (recommended)
-uv pip install -e .
-
-# Or with pip
-pip install -e .
+pip install uv && uv sync --all-extras --all-groups && uv run huggingface-cli login
 
 # Install evaluation dependencies
 pip install mteb scikit-learn
