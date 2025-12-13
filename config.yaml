@@ -7,7 +7,7 @@
 model:
   # Full model for cluster training
   full:
-    vocab_size: 32000
+    vocab_size: 98304
     hidden_size: 2048
     num_hidden_layers: 28
     num_attention_heads: 16
@@ -29,7 +29,7 @@ model:
 
   # Debug model for local testing (scaled down)
   debug:
-    vocab_size: 32000
+    vocab_size: 65536
     hidden_size: 512
     num_hidden_layers: 4
     num_attention_heads: 8

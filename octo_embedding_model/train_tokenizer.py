@@ -645,8 +645,8 @@ def main():
     # Set sample size
     max_samples = args.max_samples
     if args.debug:
-        max_samples = 1000
-        logger.info("Debug mode: using 1000 samples per source")
+        max_samples = 5000
+        logger.info("Debug mode: using 5000 samples per source")
     
     # Train tokenizer
     tokenizer = train_bpe_tokenizer(

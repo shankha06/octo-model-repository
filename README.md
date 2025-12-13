@@ -56,19 +56,21 @@ Train a BPE tokenizer on Ecom-niverse and EDGAR financial data:
 # Full training (64K vocab)
 uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 65536 \
-    --output-dir ./models/tokenizer
+    --max-samples 2500000 \
+    --output-dir ./models/tokenizer \
 
 # Quick debug mode (1K samples)
 uv run python octo_embedding_model/train_tokenizer.py \
-    --vocab-size 32768 \
-    --max-samples 2000000 \
+    --vocab-size 65536 \
+    --max-samples 2500000 \
     --output-dir ./models/tokenizer \
     --debug
 
 # 96K vocabulary for larger model
 uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 98304 \
-    --output-dir ./models/tokenizer
+    --max-samples 3500000 \
+    --output-dir ./models/tokenizer \
 
 # Verify tokenizer
 uv run python octo_embedding_model/train_tokenizer.py \
