@@ -41,7 +41,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from octo_embedding_model.data_loader import (
     PreTrainingDataset,
     SpanMaskingCollator,
+    StreamingPreTrainingDataset,
     create_combined_pretraining_dataset,
+    create_streaming_pretraining_dataset,
 )
 from octo_embedding_model.model_architecture import ChromaConfig, ChromeMoEModel
 from octo_embedding_model.trainer_utils import (
@@ -395,18 +397,29 @@ def main():
     if is_ddp:
         model = wrap_model_ddp(model, local_rank)
 
-    # Create dataset
+    # Create dataset (streaming for fast start)
     if rank == 0:
-        logger.info("Loading dataset...")
+        logger.info("Creating streaming dataset (training starts immediately)...")
 
     debug_mode = config.get("active_model_profile") == "debug"
-    dataset = create_combined_pretraining_dataset(
-        config.get("data", {}),
-        debug=debug_mode,
-    )
+    use_streaming = config.get("data", {}).get("streaming", True)  # Default to streaming
+    
+    if use_streaming:
+        dataset = create_streaming_pretraining_dataset(
+            config.get("data", {}),
+            debug=debug_mode,
+        )
+        # IterableDataset doesn't support DistributedSampler
+        sampler = None
+    else:
+        dataset = create_combined_pretraining_dataset(
+            config.get("data", {}),
+            debug=debug_mode,
+        )
+        sampler = DistributedSampler(dataset, shuffle=True) if is_ddp else None
 
     if rank == 0:
-        logger.info(f"Dataset size: {len(dataset)} samples")
+        logger.info(f"Dataset estimated size: {len(dataset):,} samples")
 
     # Create collator
     phase1_config = config.get("phase1", {})
@@ -421,16 +434,15 @@ def main():
     )
 
     # Create dataloader
-    sampler = DistributedSampler(dataset, shuffle=True) if is_ddp else None
-
     dataloader = DataLoader(
         dataset,
         batch_size=training_config.get("per_device_batch_size", 8),
-        shuffle=(sampler is None),
+        shuffle=False if use_streaming else (sampler is None),
         sampler=sampler,
         collate_fn=collator,
         num_workers=4,
         pin_memory=True,
+        prefetch_factor=2,  # Prefetch for faster data loading
     )
 
     # Create optimizer

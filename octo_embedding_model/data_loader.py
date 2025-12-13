@@ -238,13 +238,11 @@ class ContrastiveCollator:
                 return_tensors="pt",
             )
             result["negative_input_ids"] = negative_encoded["input_ids"]
-            result["negative_attention_mask"] = negative_encoded["attention_mask"]
-
         return result
 
 
 class PreTrainingDataset(Dataset):
-    """Dataset for Phase 1 pre-training."""
+    """Dataset for Phase 1 pre-training (in-memory)."""
 
     def __init__(
         self,
@@ -259,6 +257,120 @@ class PreTrainingDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         return {"text": self.texts[idx]}
+
+
+class StreamingPreTrainingDataset(torch.utils.data.IterableDataset):
+    """
+    Streaming dataset for Phase 1 pre-training.
+    
+    Uses HuggingFace streaming datasets directly - training starts immediately
+    without loading all data into memory first.
+    """
+
+    def __init__(
+        self,
+        config: dict[str, Any],
+        max_samples_per_source: int = 3000000,
+        debug: bool = False,
+    ):
+        self.config = config
+        self.debug = debug
+        self.max_samples = 1000 if debug else max_samples_per_source
+        self._estimated_size = self.max_samples * 3  # 3 sources
+        
+    def __len__(self) -> int:
+        """Estimated size for progress bars."""
+        return self._estimated_size
+        
+    def _stream_finance(self):
+        """Stream finance data."""
+        finance_datasets = [
+            ("ashraq/financial-news", ["headline", "title", "text"]),
+            ("zeroshot/twitter-financial-news-topic", ["text", "tweet", "sentence"]),
+        ]
+        
+        count = 0
+        for dataset_id, text_fields in finance_datasets:
+            if count >= self.max_samples:
+                break
+            try:
+                dataset = load_dataset(dataset_id, split="train", streaming=True)
+                for item in dataset:
+                    text = None
+                    for field in text_fields:
+                        if field in item and item[field]:
+                            text = str(item[field])
+                            break
+                    if text and len(text) > 20:
+                        yield {"text": text}
+                        count += 1
+                        if count >= self.max_samples:
+                            break
+            except Exception:
+                continue
+    
+    def _stream_ecommerce(self):
+        """Stream e-commerce data."""
+        count = 0
+        try:
+            dataset = load_dataset("thebajajra/Ecom-niverse", split="train", streaming=True)
+            for item in dataset:
+                for field in ["title", "description", "text", "product_name"]:
+                    if field in item and item[field]:
+                        text = str(item[field])
+                        if len(text) > 50:
+                            yield {"text": text}
+                            count += 1
+                            if count >= self.max_samples:
+                                return
+                            break
+        except Exception:
+            pass
+    
+    def _stream_generic(self):
+        """Stream generic web data."""
+        count = 0
+        try:
+            subset = self.config.get("general", {}).get("fineweb_edu", {}).get("subset", "sample-10BT")
+            dataset = load_dataset("HuggingFaceFW/fineweb-edu", subset, split="train", streaming=True)
+            for item in dataset:
+                text = item.get("text", "")
+                if text and len(text) > 100:
+                    # Chunk long texts
+                    if len(text) > 5000:
+                        for i in range(0, len(text), 2000):
+                            chunk = text[i:i+2500]
+                            if len(chunk) > 200:
+                                yield {"text": chunk}
+                                count += 1
+                                if count >= self.max_samples:
+                                    return
+                    else:
+                        yield {"text": text}
+                        count += 1
+                        if count >= self.max_samples:
+                            return
+        except Exception:
+            pass
+    
+    def __iter__(self):
+        """Interleave all sources for balanced training."""
+        sources = [
+            self._stream_finance(),
+            self._stream_ecommerce(),
+            self._stream_generic(),
+        ]
+        
+        # Round-robin interleaving
+        exhausted = [False] * len(sources)
+        while not all(exhausted):
+            for i, source in enumerate(sources):
+                if exhausted[i]:
+                    continue
+                try:
+                    yield next(source)
+                except StopIteration:
+                    exhausted[i] = True
 
 
 class ContrastiveDataset(Dataset):
@@ -640,8 +752,6 @@ def create_combined_pretraining_dataset(
         fineweb_max = fineweb_config.get("max_samples", max_samples)
         fineweb = load_fineweb_edu(
             subset=fineweb_config.get("subset", "sample-10BT"),
-            max_samples=fineweb_max,
-        )
         all_texts.extend(fineweb.texts)
         print(f"Generic samples: {len(fineweb):,}")
 
@@ -651,6 +761,28 @@ def create_combined_pretraining_dataset(
     print(f"\n=== Total pre-training samples: {len(all_texts):,} ===")
 
     return PreTrainingDataset(all_texts)
+
+
+def create_streaming_pretraining_dataset(
+    config: dict[str, Any],
+    debug: bool = False,
+) -> StreamingPreTrainingDataset:
+    """
+    Create streaming pre-training dataset for immediate training start.
+    
+    Uses IterableDataset that streams data directly from HuggingFace,
+    avoiding the delay of loading all data into memory first.
+    """
+    max_samples = config.get("max_samples_per_dataset", 3000000)
+    
+    print(f"\n=== Creating Streaming Dataset (max {max_samples:,} per source) ===")
+    print("Training will start immediately while data streams in...")
+    
+    return StreamingPreTrainingDataset(
+        config=config,
+        max_samples_per_source=max_samples,
+        debug=debug,
+    )
 
 
 def create_combined_contrastive_dataset(
