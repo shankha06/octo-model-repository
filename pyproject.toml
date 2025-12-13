@@ -4,16 +4,9 @@ version = "0.1.0"
 description = "Welcome to the Enigma Engines."
 authors = [{ name = "Shankhadeep Roy", email = "shankharay.917@gmail.com" }]
 readme = "README.md"
-requires-python = ">=3.9, <3.10"
+requires-python = ">=3.11, <3.12"
 license = { text = "MIT License" }
 keywords = ['python']
-classifiers = [
-    "Intended Audience :: Developers",
-    "Programming Language :: Python",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-]
 dependencies = [
     "beautifulsoup4>=4.13.3",
     "black>=25.1.0",
@@ -29,6 +22,12 @@ dependencies = [
     "pydantic>=2.11.5",
     "typer>=0.16.0",
     "sentence-transformers>=5.0.0",
+    "datasets>=3.0.0",
+    "transformers>=4.40.0",
+    "peft>=0.10.0",
+    "wandb>=0.16.0",
+    "tqdm>=4.66.0",
+    "PyYAML>=6.0",
 ]
 
 
@@ -75,21 +74,26 @@ infra = [
 
 [tool.setuptools]
 # No package-dir needed for flat layout if packages are in root
-packages = ["model_repository"]
+packages = ["model_repository", "octo_embedding_model"]
 
 [tool.pytest.ini_options]
-testpaths = ["api/tests", "ui/tests"]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "--cov=api --cov=ui --cov-report=term-missing --cov-config=.coveragerc --full-trace" 
-asyncio_mode = "auto"
+addopts = "--cov=octo_embedding_model --cov-report=term-missing --full-trace"
 
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+]
+
 [tool.hatch.build.targets.wheel]
-packages = ["model_repository"]
+packages = ["model_repository", "octo_embedding_model"]
 
 [tool.mypy]
 files = ["model_repository"]
@@ -102,7 +106,7 @@ warn_unused_ignores = true
 show_error_codes = true
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 120
 fix = true
 

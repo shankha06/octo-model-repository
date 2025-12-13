@@ -1,0 +1,286 @@
+# Chroma-MoE Embedding Model Training Configuration
+# Reference: embedding_design.md
+
+# ============================================
+# Model Architecture Configuration
+# ============================================
+model:
+  # Full model for cluster training
+  full:
+    vocab_size: 32000
+    hidden_size: 2048
+    num_hidden_layers: 28
+    num_attention_heads: 16
+    kv_lora_rank: 512
+    q_lora_rank: 1024
+    qk_rope_head_dim: 64
+    qk_nope_head_dim: 128
+    v_head_dim: 128
+    moe_intermediate_size: 1408
+    num_routed_experts: 64
+    num_shared_experts: 2
+    num_experts_per_tok: 6
+    moe_layer_freq: 1
+    aux_loss_alpha: 0.01
+    max_position_embeddings: 8192
+    rms_norm_eps: 1.0e-6
+    rope_theta: 10000.0
+    latent_pooler_dim: 4096
+
+  # Debug model for local testing (scaled down)
+  debug:
+    vocab_size: 32000
+    hidden_size: 512
+    num_hidden_layers: 4
+    num_attention_heads: 8
+    kv_lora_rank: 128
+    q_lora_rank: 256
+    qk_rope_head_dim: 32
+    qk_nope_head_dim: 32
+    v_head_dim: 32
+    moe_intermediate_size: 512
+    num_routed_experts: 8
+    num_shared_experts: 1
+    num_experts_per_tok: 2
+    moe_layer_freq: 1
+    aux_loss_alpha: 0.01
+    max_position_embeddings: 512
+    rms_norm_eps: 1.0e-6
+    rope_theta: 10000.0
+    latent_pooler_dim: 512
+
+# Active profile: "debug" for local, "full" for cluster
+active_model_profile: "debug"
+
+# ============================================
+# Tokenizer Configuration
+# ============================================
+tokenizer:
+  # Path to custom tokenizer (train with train_tokenizer.py)
+  path: "./tokenizer"
+  
+  # Vocab size should match trained tokenizer
+  # Options: 32768 (32K), 65536 (64K), 98304 (96K)
+  vocab_size: 65536
+  
+  # Fallback if custom tokenizer not available
+  fallback: "bert-base-uncased"
+  
+  # Training settings for train_tokenizer.py
+  training:
+    min_frequency: 2
+    max_samples_per_source: null  # null = use all data
+    ecom_mix_ratio: 0.5  # 50% e-commerce, 50% finance
+
+# ============================================
+# Phase 1: Domain-Adaptive Pre-training
+# ============================================
+phase1:
+  enabled: true
+  
+  # Span masking configuration (T5-style)
+  masking:
+    mask_ratio: 0.15
+    mean_span_length: 3
+    
+  # Optimizer
+  optimizer:
+    name: "adamw"
+    learning_rate: 3.0e-4
+    min_learning_rate: 3.0e-5
+    weight_decay: 0.1
+    beta1: 0.9
+    beta2: 0.95
+    eps: 1.0e-8
+    
+  # Training
+  training:
+    global_batch_size: 2097152  # ~2M tokens
+    per_device_batch_size: 8
+    gradient_accumulation_steps: 16
+    max_steps: 100000
+    warmup_steps: 2000
+    max_seq_length: 512
+    
+  # MoE specific
+  moe:
+    aux_loss_weight: 0.01
+    
+  # Checkpointing
+  checkpoint:
+    save_steps: 5000
+    save_total_limit: 3
+
+# ============================================
+# Phase 2: Contrastive Instruction Tuning  
+# ============================================
+phase2:
+  enabled: true
+  
+  # Contrastive learning
+  contrastive:
+    temperature: 0.05
+    temperature_learnable: true
+    in_batch_negatives: true
+    hard_negatives_per_sample: 7
+    hard_negative_weight: 1.0
+    
+  # GradCache for large batch simulation
+  grad_cache:
+    enabled: true
+    chunk_size: 16
+    
+  # Optimizer
+  optimizer:
+    name: "adamw"
+    learning_rate: 1.0e-5
+    min_learning_rate: 1.0e-6
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+    eps: 1.0e-8
+    
+  # Training
+  training:
+    effective_batch_size: 16384
+    per_device_batch_size: 4
+    gradient_accumulation_steps: 8
+    num_epochs: 3
+    warmup_ratio: 0.1
+    max_seq_length: 512
+    
+  # Instruction templates
+  instruction:
+    query_template: "Instruct: {instruction}\nQuery: {query}"
+    passage_template: "{passage}"
+    
+  # Checkpointing
+  checkpoint:
+    save_steps: 1000
+    save_total_limit: 5
+
+# ============================================
+# Datasets (HuggingFace)
+# ============================================
+data:
+  # Finance datasets
+  finance:
+    finmteb:
+      enabled: true
+      dataset_id: "TheFinAI/finmteb"
+      split: "train"
+      max_samples: null  # null = use all
+      
+    convfinqa:
+      enabled: true
+      dataset_id: "MehdiHosseiniMoghadam/ConvFinQA"
+      split: "train"
+      max_samples: 50000
+      
+  # Retail datasets
+  retail:
+    esci:
+      enabled: true
+      dataset_id: "tasksource/esci"
+      split: "train"
+      max_samples: 100000
+      use_substitutes_as_hard_negatives: true
+      
+  # General regularization
+  general:
+    msmarco:
+      enabled: true
+      dataset_id: "ms_marco"
+      subset: "v1.1"
+      split: "train"
+      max_samples: 50000
+      
+    # FineWeb-Edu for grammatical competence (Phase 1 only)
+    fineweb_edu:
+      enabled: true
+      dataset_id: "HuggingFaceFW/fineweb-edu"
+      subset: "sample-10BT"  # Use 10B token sample for faster loading
+      split: "train"
+      mixture_ratio: 0.15  # 15% of pre-training data
+      max_samples: 100000
+      
+  # Debug small datasets for local testing
+  debug:
+    max_samples_per_dataset: 1000
+    
+  # Preprocessing
+  preprocessing:
+    max_length: 512
+    truncation: true
+    padding: "max_length"
+
+# ============================================
+# Distributed Training (DDP)
+# ============================================
+distributed:
+  backend: "nccl"
+  find_unused_parameters: false
+  gradient_as_bucket_view: true
+  
+  # Cluster settings
+  cluster:
+    nodes: 1
+    gpus_per_node: 8
+    
+  # For local testing without multi-GPU
+  local:
+    enabled: true
+    world_size: 1
+
+# ============================================
+# Weights & Biases
+# ============================================
+wandb:
+  enabled: true
+  project: "chroma-moe-embedding"
+  entity: null  # Your W&B username/team
+  run_name: null  # Auto-generated if null
+  tags:
+    - "embedding"
+    - "moe"
+    - "finance"
+    - "retail"
+  log_interval: 10
+  save_code: true
+  
+  # Metrics to log
+  metrics:
+    - "loss"
+    - "learning_rate"
+    - "expert_load_balance"
+    - "gradient_norm"
+
+# ============================================
+# General Training Settings
+# ============================================
+training:
+  seed: 42
+  device: "cuda"
+  precision: "bf16"  # bf16, fp16, or fp32
+  gradient_checkpointing: true
+  compile: false  # torch.compile (experimental)
+  
+  # Logging
+  logging:
+    level: "INFO"
+    log_steps: 10
+    
+  # Output
+  output_dir: "./checkpoints"
+  resume_from_checkpoint: null
+
+# ============================================
+# Evaluation
+# ============================================
+evaluation:
+  enabled: true
+  eval_steps: 1000
+  metrics:
+    - "ndcg@10"
+    - "mrr@10"
+    - "recall@100"
