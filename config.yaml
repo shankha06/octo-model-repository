@@ -57,7 +57,7 @@ active_model_profile: "debug"
 # ============================================
 tokenizer:
   # Path to custom tokenizer (train with train_tokenizer.py)
-  path: "./tokenizer"
+  path: "./models/tokenizer"
   
   # Vocab size should match trained tokenizer
   # Options: 32768 (32K), 65536 (64K), 98304 (96K)

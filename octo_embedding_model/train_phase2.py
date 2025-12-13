@@ -399,7 +399,7 @@ def main():
 
     # Load tokenizer FIRST (needed for model vocab size)
     tokenizer_config = config.get("tokenizer", {})
-    tokenizer_path = tokenizer_config.get("path", "./tokenizer")
+    tokenizer_path = tokenizer_config.get("path", "./models/tokenizer")
     fallback_tokenizer = tokenizer_config.get("fallback", "bert-base-uncased")
     
     if os.path.exists(tokenizer_path) and os.path.isdir(tokenizer_path):

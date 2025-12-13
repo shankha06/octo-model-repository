@@ -20,7 +20,7 @@ git clone https://github.com/your-org/octo-model-repository.git
 cd octo-model-repository
 
 # Install with uv (recommended)
-pip install uv && uv sync --all-extras --all-groups && uv run huggingface-cli login
+pip install uv && uv sync --all-extras --all-groups && uv run hf auth login
 
 # Install evaluation dependencies
 pip install mteb scikit-learn
@@ -40,7 +40,7 @@ active_model_profile: "debug"
 
 # Tokenizer settings
 tokenizer:
-  path: "./tokenizer"
+  path: "./models/tokenizer"
   vocab_size: 65536
 ```
 
@@ -56,22 +56,23 @@ Train a BPE tokenizer on Ecom-niverse and EDGAR financial data:
 # Full training (64K vocab)
 uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 65536 \
-    --output-dir ./tokenizer
+    --output-dir ./models/tokenizer
 
 # Quick debug mode (1K samples)
 uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 32768 \
-    --output-dir ./tokenizer \
+    --max-samples 100000 \
+    --output-dir ./models/tokenizer \
     --debug
 
 # 96K vocabulary for larger model
 uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 98304 \
-    --output-dir ./tokenizer
+    --output-dir ./models/tokenizer
 
 # Verify tokenizer
 uv run python octo_embedding_model/train_tokenizer.py \
-    --verify-only ./tokenizer
+    --verify-only ./models/tokenizer
 ```
 
 ### Step 2: Phase 1 - Domain-Adaptive Pre-training
@@ -128,7 +129,7 @@ torchrun --nproc_per_node=8 octo_embedding_model/train_phase2.py \
 ```bash
 uv run python octo_embedding_model/evaluate.py \
     --model-path ./checkpoints/phase2/final_model.pt \
-    --tokenizer-path ./tokenizer \
+    --tokenizer-path ./models/tokenizer \
     --benchmark all
 ```
 

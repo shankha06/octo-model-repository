@@ -10,13 +10,13 @@ are single tokens rather than fragmented sub-words.
 
 Usage:
     # Train tokenizer with default settings
-    python train_tokenizer.py --output-dir ./tokenizer
+    python train_tokenizer.py --output-dir ./models/tokenizer
     
     # Train with specific vocab size
-    python train_tokenizer.py --vocab-size 65536 --output-dir ./tokenizer
+    python train_tokenizer.py --vocab-size 65536 --output-dir ./models/tokenizer
     
     # Debug mode with small sample
-    python train_tokenizer.py --debug --output-dir ./tokenizer
+    python train_tokenizer.py --debug --output-dir ./models/tokenizer
 """
 
 import argparse
@@ -415,7 +415,7 @@ def combined_corpus_iterator(
 def train_bpe_tokenizer(
     vocab_size: int = 65536,
     min_frequency: int = 2,
-    output_dir: str = "./tokenizer",
+    output_dir: str = "./models/tokenizer",
     max_samples_per_source: int | None = None,
     special_tokens: list[str] | None = None,
 ) -> PreTrainedTokenizerFast:
@@ -588,7 +588,7 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="./tokenizer",
+        default="./models/tokenizer",
         help="Directory to save tokenizer",
     )
     parser.add_argument(

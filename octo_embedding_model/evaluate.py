@@ -8,7 +8,7 @@ Evaluates the trained model on:
 
 Usage:
     # Evaluate on all benchmarks
-    python evaluate.py --model-path ./checkpoints/phase2/final_model.pt --tokenizer-path ./tokenizer
+    python evaluate.py --model-path ./checkpoints/phase2/final_model.pt --tokenizer-path ./models/tokenizer
     
     # Evaluate on specific benchmark
     python evaluate.py --model-path ./checkpoints/phase2/final_model.pt --benchmark finmteb
@@ -308,7 +308,7 @@ def main():
     parser.add_argument(
         "--tokenizer-path",
         type=str,
-        default="./tokenizer",
+        default="./models/tokenizer",
         help="Path to tokenizer",
     )
     parser.add_argument(
