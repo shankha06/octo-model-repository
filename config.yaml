@@ -80,7 +80,7 @@ phase1:
   
   # Span masking configuration (T5-style)
   masking:
-    mask_ratio: 0.15
+    mask_ratio: 0.30 # Increased from 0.15 for better learning efficiency
     mean_span_length: 3
     
   # Optimizer

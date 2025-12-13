@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import inspect
 import logging
 import os
 import sys
@@ -470,6 +471,14 @@ def main():
 
     # Create optimizer
     optimizer_config = phase1_config.get("optimizer", {})
+    # Use fused AdamW if available (PyTorch 2.0+)
+    fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+    use_fused = fused_available and torch.cuda.is_available()
+    extra_args = dict(fused=True) if use_fused else dict()
+    
+    if rank == 0 and use_fused:
+        logger.info("Using Fused AdamW optimizer (faster)")
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=optimizer_config.get("learning_rate", 3e-4),
@@ -479,6 +488,7 @@ def main():
         ),
         eps=optimizer_config.get("eps", 1e-8),
         weight_decay=optimizer_config.get("weight_decay", 0.1),
+        **extra_args
     )
 
     # Create scheduler

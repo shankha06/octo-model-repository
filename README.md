@@ -16,11 +16,14 @@ A domain-specific embedding model for **finance** and **e-commerce** with Multi-
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/octo-model-repository.git
+git clone https://github.com/shankha06/octo-model-repository.git
 cd octo-model-repository
 
 # Install with uv (recommended)
 pip install uv && uv sync --all-extras --all-groups && uv run hf auth login
+
+# Install flash-attn
+uv run pip install flash-attn --no-build-isolation
 
 # Install evaluation dependencies
 pip install mteb scikit-learn
