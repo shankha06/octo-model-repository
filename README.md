@@ -276,7 +276,7 @@ MIT License
 ```bibtex
 @misc{chromamoe2024,
   title={Chroma-MoE: Domain-Specific Embedding Model},
-  author={Your Name},
-  year={2024}
+  author={Shankhadeep Roy},
+  year={2025}
 }
 ```

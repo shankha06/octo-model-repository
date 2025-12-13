@@ -1,7 +1,7 @@
 [project]
 name = "octo-model-repository"
 version = "0.1.0"
-description = "Welcome to the Enigma Engines."
+description = "Welcome to training Chroma-MoE embedding models which are domain-specific for finance and e-commerce."
 authors = [{ name = "Shankhadeep Roy", email = "shankharay.917@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.11, <3.12"
@@ -38,12 +38,6 @@ Documentation = "https://shankha06.github.io/octo-model-repository/"
 
 
 [project.optional-dependencies]
-reco = [
-    "fake-useragent>=2.1.0",
-    "faker>=37.3.0",
-    "openpyxl>=3.1.5",
-    "pandas>=2.2.3",
-]
 dev = [
     "pytest>=8.3.5",
     "pytest-cov>=6.0.0",
@@ -66,10 +60,6 @@ dev = [
     "jupyter-contrib-nbextensions>=0.7.0",
     "sentence-transformers>=5.0.0",
     "huggingface-hub[hf-xet]>=0.32.4",
-]
-infra = [
-    "boto3>=1.38.24",
-    "opensearch-py>=2.8.0",
 ]
 
 [tool.setuptools]
