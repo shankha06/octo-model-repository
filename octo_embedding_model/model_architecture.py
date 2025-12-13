@@ -5,6 +5,9 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
+# Check for Flash Attention 2 availability
+FLASH_ATTENTION_AVAILABLE = hasattr(F, 'scaled_dot_product_attention')
+
 @dataclass
 class ChromaConfig:
     vocab_size: int = 32000  # Optimized for English (Finance/Retail domain)
@@ -149,15 +152,34 @@ class MultiHeadLatentAttention(nn.Module):
         q_final = torch.cat([q_nope, q_rope], dim=-1)
         k_final = torch.cat([k_nope, k_rope], dim=-1)
 
-        # 5. Attention
-        attn_weights = torch.matmul(q_final, k_final.transpose(2, 3)) / math.sqrt(self.qk_head_dim)
-        
-        if attention_mask is not None:
-            # Bidirectional mask for embeddings (batch, 1, 1, seq_len)
-            attn_weights = attn_weights + attention_mask
+        # 5. Attention (Flash Attention 2 if available)
+        if FLASH_ATTENTION_AVAILABLE:
+            # Use PyTorch 2.0+ scaled_dot_product_attention (uses Flash Attention 2 when available)
+            # Need to handle mask format for SDPA
+            if attention_mask is not None:
+                # Convert additive mask to boolean mask for SDPA
+                # attention_mask has shape [batch, 1, 1, seq_len] with -10000 for masked positions
+                attn_mask = attention_mask.squeeze(1).squeeze(1) > -1000  # [batch, seq_len]
+                attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)  # [batch, 1, 1, seq_len]
+                attn_mask = attn_mask.expand(-1, self.num_heads, seq_len, -1)  # [batch, heads, seq, seq]
+            else:
+                attn_mask = None
+            
+            attn_output = F.scaled_dot_product_attention(
+                q_final, k_final, v,
+                attn_mask=attn_mask,
+                dropout_p=0.0,
+                is_causal=False,  # Bidirectional for embedding models
+            )
+        else:
+            # Fallback to manual attention
+            attn_weights = torch.matmul(q_final, k_final.transpose(2, 3)) / math.sqrt(self.qk_head_dim)
+            
+            if attention_mask is not None:
+                attn_weights = attn_weights + attention_mask
 
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q_final.dtype)
-        attn_output = torch.matmul(attn_weights, v)
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q_final.dtype)
+            attn_output = torch.matmul(attn_weights, v)
         
         attn_output = attn_output.transpose(1, 2).contiguous().reshape(batch, seq_len, -1)
         output = self.o_proj(attn_output)

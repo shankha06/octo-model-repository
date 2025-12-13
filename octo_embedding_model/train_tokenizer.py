@@ -358,7 +358,7 @@ def combined_corpus_iterator(
     }
     
     exhausted = set()
-    batch_size = 100  # Process in batches for better throughput
+    batch_size = 10000  # Process in batches for better throughput
     total_yielded = 0
     
     while len(exhausted) < len(iterators):
@@ -387,7 +387,7 @@ def combined_corpus_iterator(
             total_yielded += 1
         
         # Progress logging every 10K samples
-        if total_yielded % 10000 == 0 and total_yielded > 0:
+        if total_yielded % 100000 == 0 and total_yielded > 0:
             logger.info(f"Processed {total_yielded:,} samples...")
 
 
@@ -654,6 +654,7 @@ def main():
         min_frequency=args.min_frequency,
         output_dir=args.output_dir,
         max_samples_per_source=max_samples,
+        use_parallel=False,
     )
     
     # Verify tokenizer

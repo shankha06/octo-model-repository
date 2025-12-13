@@ -30,6 +30,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
@@ -189,8 +190,9 @@ def train_epoch(
     wandb_logger: WandbLogger | None,
     device: torch.device,
     is_ddp: bool = False,
+    scaler: GradScaler | None = None,
 ) -> int:
-    """Train for one epoch."""
+    """Train for one epoch with mixed precision."""
     model.train()
 
     phase1_config = config.get("phase1", {})
@@ -213,29 +215,42 @@ def train_epoch(
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
 
-        # Forward pass
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-        )
-
-        loss = outputs["loss"]
+        # Forward pass with mixed precision
+        with autocast(device_type='cuda', dtype=torch.bfloat16):
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+            )
+            loss = outputs["loss"]
 
         # Scale loss for gradient accumulation
         loss = loss / grad_accum_steps
-        loss.backward()
+        
+        # Backward pass with scaler
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         accumulated_loss += loss.item()
 
         # Optimizer step after accumulation
         if (step + 1) % grad_accum_steps == 0:
             # Gradient clipping
+            if scaler is not None:
+                scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-            optimizer.step()
+            # Optimizer step with scaler if using mixed precision
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+                
             scheduler.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)  # More memory efficient
 
             global_step += 1
 
@@ -495,8 +510,18 @@ def main():
     checkpoint_config = phase1_config.get("checkpoint", {})
     save_steps = checkpoint_config.get("save_steps", 5000)
 
+    # Enable optimizations
+    torch.backends.cudnn.benchmark = True  # Auto-tune convolutions
+    torch.backends.cuda.matmul.allow_tf32 = True  # TF32 for faster matmul
+    torch.backends.cudnn.allow_tf32 = True
+    
+    # Create GradScaler for mixed precision (bf16 doesn't need scaling, but fp16 does)
+    precision = config.get("training", {}).get("precision", "bf16")
+    scaler = GradScaler() if precision == "fp16" else None
+    
     if rank == 0:
-        logger.info("Starting training...")
+        logger.info(f"Starting training with {precision} precision...")
+        logger.info(f"Flash Attention: {'enabled' if hasattr(torch.nn.functional, 'scaled_dot_product_attention') else 'disabled'}")
 
     num_epochs = 10  # Will likely stop based on max_steps
     for epoch in range(start_epoch, num_epochs):
@@ -515,6 +540,7 @@ def main():
             wandb_logger=wandb_logger,
             device=device,
             is_ddp=is_ddp,
+            scaler=scaler,
         )
 
         # Save checkpoint
