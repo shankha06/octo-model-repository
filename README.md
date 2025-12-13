@@ -57,23 +57,23 @@ Train a BPE tokenizer on Ecom-niverse and EDGAR financial data:
 
 ```bash
 # Full training (64K vocab)
-python octo_embedding_model/train_tokenizer.py \
+uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 65536 \
     --output-dir ./tokenizer
 
 # Quick debug mode (1K samples)
-python octo_embedding_model/train_tokenizer.py \
+uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 32768 \
     --output-dir ./tokenizer \
     --debug
 
 # 96K vocabulary for larger model
-python octo_embedding_model/train_tokenizer.py \
+uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 98304 \
     --output-dir ./tokenizer
 
 # Verify tokenizer
-python octo_embedding_model/train_tokenizer.py \
+uv run python octo_embedding_model/train_tokenizer.py \
     --verify-only ./tokenizer
 ```
 
@@ -83,14 +83,14 @@ Pre-train with span masking MLM on domain-specific corpora:
 
 ```bash
 # Single GPU (local testing)
-python octo_embedding_model/train_phase1.py --config config.yaml
+uv run python octo_embedding_model/train_phase1.py --config config.yaml
 
 # Multi-GPU cluster training with DDP
-torchrun --nproc_per_node=8 octo_embedding_model/train_phase1.py \
+uv run torchrun --nproc_per_node=8 octo_embedding_model/train_phase1.py \
     --config config.yaml
 
 # Validate DDP setup
-torchrun --nproc_per_node=2 octo_embedding_model/train_phase1.py \
+uv run torchrun --nproc_per_node=2 octo_embedding_model/train_phase1.py \
     --config config.yaml --test-ddp
 ```
 
@@ -106,7 +106,7 @@ Fine-tune with InfoNCE loss on query-document pairs:
 
 ```bash
 # Single GPU
-python octo_embedding_model/train_phase2.py \
+uv run python octo_embedding_model/train_phase2.py \
     --config config.yaml \
     --pretrained-path ./checkpoints/checkpoint-100000.pt
 
@@ -129,7 +129,7 @@ torchrun --nproc_per_node=8 octo_embedding_model/train_phase2.py \
 ### Evaluate on All Benchmarks
 
 ```bash
-python octo_embedding_model/evaluate.py \
+uv run python octo_embedding_model/evaluate.py \
     --model-path ./checkpoints/phase2/final_model.pt \
     --tokenizer-path ./tokenizer \
     --benchmark all
@@ -139,22 +139,22 @@ python octo_embedding_model/evaluate.py \
 
 ```bash
 # FinMTEB (finance)
-python octo_embedding_model/evaluate.py \
+uv run python octo_embedding_model/evaluate.py \
     --model-path ./checkpoints/phase2/final_model.pt \
     --benchmark finmteb
 
 # MTEB (general)
-python octo_embedding_model/evaluate.py \
+uv run python octo_embedding_model/evaluate.py \
     --model-path ./checkpoints/phase2/final_model.pt \
     --benchmark mteb
 
 # Amazon ESCI (e-commerce)
-python octo_embedding_model/evaluate.py \
+uv run python octo_embedding_model/evaluate.py \
     --model-path ./checkpoints/phase2/final_model.pt \
     --benchmark esci
 
 # Debug mode (smaller sample sizes)
-python octo_embedding_model/evaluate.py \
+uv run python octo_embedding_model/evaluate.py \
     --model-path ./checkpoints/phase2/final_model.pt \
     --benchmark all \
     --debug

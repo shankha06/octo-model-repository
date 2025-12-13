@@ -145,52 +145,59 @@ def get_ecomniverse_iterator(
     english_only: bool = True,
 ) -> Iterator[str]:
     """
-    Iterator over Ecom-niverse dataset texts.
+    Iterator over e-commerce dataset texts.
     
-    Dataset: thebajajra/Ecom-niverse
+    Tries multiple e-commerce datasets in order of preference.
     """
-    logger.info("Loading Ecom-niverse dataset...")
+    logger.info("Loading e-commerce dataset...")
     
-    try:
-        dataset = load_dataset(
-            "thebajajra/Ecom-niverse",
-            split="train",
-            streaming=True,
-        )
-        
-        count = 0
-        for item in dataset:
-            # Extract text content from various fields
-            texts = []
-            
-            if "title" in item and item["title"]:
-                texts.append(str(item["title"]))
-            if "description" in item and item["description"]:
-                texts.append(str(item["description"]))
-            if "text" in item and item["text"]:
-                texts.append(str(item["text"]))
-            if "product_name" in item and item["product_name"]:
-                texts.append(str(item["product_name"]))
-            if "product_description" in item and item["product_description"]:
-                texts.append(str(item["product_description"]))
-                
-            for text in texts:
-                if len(text) > 50:  # Filter very short texts
-                    # Simple English check (ASCII ratio)
-                    if english_only:
-                        ascii_ratio = sum(1 for c in text if ord(c) < 128) / len(text)
-                        if ascii_ratio < 0.85:
-                            continue
-                    
-                    yield text
-                    count += 1
-                    
-                    if max_samples and count >= max_samples:
-                        return
-                        
-    except Exception as e:
-        logger.warning(f"Could not load Ecom-niverse: {e}")
+    # Try multiple e-commerce datasets
+    dataset_options = [
+        ("thebajajra/Ecom-niverse", None),
+        ("McAuley-Lab/Amazon-Reviews-2023", "raw_meta_All_Beauty"),
+        ("spacemanidol/product-search-corpus", None),
+    ]
+    
+    dataset = None
+    for dataset_id, subset in dataset_options:
+        try:
+            logger.info(f"Trying to load e-commerce dataset: {dataset_id}")
+            if subset:
+                dataset = load_dataset(dataset_id, subset, split="full", streaming=True)
+            else:
+                dataset = load_dataset(dataset_id, split="train", streaming=True)
+            logger.info(f"Successfully loaded e-commerce dataset: {dataset_id}")
+            break
+        except Exception as e:
+            logger.warning(f"Could not load {dataset_id}: {e}")
+            continue
+    
+    if dataset is None:
+        logger.warning("Could not load any e-commerce dataset")
         return
+    
+    count = 0
+    for item in dataset:
+        # Extract text content from various fields
+        texts = []
+        
+        for field in ["title", "description", "text", "product_name", "product_description", "name"]:
+            if field in item and item[field]:
+                texts.append(str(item[field]))
+            
+        for text in texts:
+            if len(text) > 50:  # Filter very short texts
+                # Simple English check (ASCII ratio)
+                if english_only:
+                    ascii_ratio = sum(1 for c in text if ord(c) < 128) / len(text)
+                    if ascii_ratio < 0.85:
+                        continue
+                
+                yield text
+                count += 1
+                
+                if max_samples and count >= max_samples:
+                    return
 
 
 def get_edgar_iterator(
@@ -198,45 +205,40 @@ def get_edgar_iterator(
     english_only: bool = True,
 ) -> Iterator[str]:
     """
-    Iterator over EDGAR SEC filings dataset texts.
+    Iterator over financial dataset texts.
     
-    Uses financial-reports-sec or similar EDGAR datasets.
+    Uses publicly available financial news and SEC filing datasets.
     """
-    logger.info("Loading EDGAR dataset...")
+    logger.info("Loading financial dataset...")
     
-    # Try different EDGAR dataset sources
+    # Try different EDGAR/financial dataset sources (ordered by accessibility)
     dataset_options = [
+        # Public financial news datasets (no auth required)
+        ("ashraq/financial-news", None),
+        ("zeroshot/twitter-financial-news-topic", None),
+        ("nickmuchi/financial-classification", None),
+        # EDGAR datasets (may require auth or have issues)
         ("eloukas/edgar-corpus", None),
         ("JanosAudworx/sec-10-k-filings", None),
-        ("financial-reports-sec", None),
     ]
     
     dataset = None
     for dataset_id, subset in dataset_options:
         try:
+            logger.info(f"Trying to load dataset: {dataset_id}")
             if subset:
-                dataset = load_dataset(dataset_id, subset, split="train", streaming=True)
+                dataset = load_dataset(dataset_id, subset, split="train", streaming=True, )
             else:
-                dataset = load_dataset(dataset_id, split="train", streaming=True)
-            logger.info(f"Loaded EDGAR dataset: {dataset_id}")
+                dataset = load_dataset(dataset_id, split="train", streaming=True, )
+            logger.info(f"Successfully loaded dataset: {dataset_id}")
             break
         except Exception as e:
             logger.debug(f"Could not load {dataset_id}: {e}")
             continue
     
     if dataset is None:
-        logger.warning("Could not load any EDGAR dataset, using fallback financial news")
-        # Fallback to financial news
-        try:
-            dataset = load_dataset(
-                "Brianferrell787/financial-news-multisource",
-                split="train",
-                streaming=True,
-            )
-            logger.info("Loaded financial news as fallback")
-        except Exception as e:
-            logger.warning(f"Could not load fallback dataset: {e}")
-            return
+        logger.warning("Could not load any financial dataset")
+        return
     
     count = 0
     for item in dataset:
