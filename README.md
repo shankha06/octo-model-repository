@@ -61,7 +61,7 @@ uv run python octo_embedding_model/train_tokenizer.py \
 # Quick debug mode (1K samples)
 uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 32768 \
-    --max-samples 100000 \
+    --max-samples 2000000 \
     --output-dir ./models/tokenizer \
     --debug
 

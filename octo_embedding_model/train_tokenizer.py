@@ -22,6 +22,7 @@ Usage:
 import argparse
 import logging
 import os
+import random
 import sys
 from pathlib import Path
 from typing import Iterator
@@ -242,14 +243,14 @@ def get_edgar_iterator(
     
     count = 0
     for item in dataset:
-        # Extract text content
+        # Extract text content (headlines, articles, etc.)
         text = None
-        for field in ["text", "content", "body", "filing_text", "document"]:
+        for field in ["text", "headline", "title", "content", "body", "filing_text", "document"]:
             if field in item and item[field]:
                 text = str(item[field])
                 break
         
-        if not text or len(text) < 100:
+        if not text or len(text) < 20:  # Lower threshold for headlines
             continue
             
         # For long documents, yield chunks
@@ -343,73 +344,85 @@ def combined_corpus_iterator(
 ) -> Iterator[str]:
     """
     Combined iterator over all datasets with specified mix ratios.
-    
-    Args:
-        ecom_samples: Max samples from e-commerce datasets
-        financial_samples: Max samples from financial datasets
-        generic_samples: Max samples from generic web datasets
-        ecom_ratio: Probability of sampling from e-commerce (default: 0.35)
-        financial_ratio: Probability of sampling from financial (default: 0.35)
-        generic_ratio: Probability of sampling from generic (default: 0.30)
+    Uses batched round-robin for better performance.
     """
     # Create iterators
     ecom_iter = get_ecomniverse_iterator(max_samples=ecom_samples)
     financial_iter = get_edgar_iterator(max_samples=financial_samples)
     generic_iter = get_generic_iterator(max_samples=generic_samples)
     
-    ecom_exhausted = False
-    financial_exhausted = False
-    generic_exhausted = False
+    iterators = {
+        "ecom": (ecom_iter, ecom_ratio),
+        "financial": (financial_iter, financial_ratio),
+        "generic": (generic_iter, generic_ratio),
+    }
     
-    import random
+    exhausted = set()
+    batch_size = 100  # Process in batches for better throughput
+    total_yielded = 0
     
-    while not (ecom_exhausted and financial_exhausted and generic_exhausted):
-        # Calculate active source weights
-        weights = []
-        sources = []
+    while len(exhausted) < len(iterators):
+        # Build batch from each source proportionally
+        batch = []
         
-        if not ecom_exhausted:
-            weights.append(ecom_ratio)
-            sources.append("ecom")
-        if not financial_exhausted:
-            weights.append(financial_ratio)
-            sources.append("financial")
-        if not generic_exhausted:
-            weights.append(generic_ratio)
-            sources.append("generic")
-        
-        if not sources:
-            break
+        for source, (iterator, ratio) in iterators.items():
+            if source in exhausted:
+                continue
             
-        # Normalize weights
-        total = sum(weights)
-        weights = [w/total for w in weights]
+            # Calculate how many to take from this source
+            count = max(1, int(batch_size * ratio))
+            
+            for _ in range(count):
+                try:
+                    text = next(iterator)
+                    batch.append(text)
+                except StopIteration:
+                    exhausted.add(source)
+                    break
         
-        # Select source
-        r = random.random()
-        cumulative = 0
-        source = sources[-1]
-        for s, w in zip(sources, weights):
-            cumulative += w
-            if r < cumulative:
-                source = s
-                break
-        
-        try:
-            if source == "ecom":
-                text = next(ecom_iter)
-            elif source == "financial":
-                text = next(financial_iter)
-            else:
-                text = next(generic_iter)
+        # Shuffle batch and yield
+        random.shuffle(batch)
+        for text in batch:
             yield text
-        except StopIteration:
-            if source == "ecom":
-                ecom_exhausted = True
-            elif source == "financial":
-                financial_exhausted = True
-            else:
-                generic_exhausted = True
+            total_yielded += 1
+        
+        # Progress logging every 10K samples
+        if total_yielded % 10000 == 0 and total_yielded > 0:
+            logger.info(f"Processed {total_yielded:,} samples...")
+
+
+def collect_corpus_fast(
+    max_samples_per_source: int | None = None,
+) -> list[str]:
+    """
+    Collect corpus data from all sources.
+    Collects all data upfront for faster BPE training.
+    """
+    logger.info("Collecting corpus data...")
+    
+    corpus = []
+    
+    sources = [
+        ("e-commerce", get_ecomniverse_iterator),
+        ("financial", get_edgar_iterator),
+        ("generic", get_generic_iterator),
+    ]
+    
+    for source_name, iterator_func in sources:
+        count = 0
+        try:
+            for text in iterator_func(max_samples=max_samples_per_source):
+                corpus.append(text)
+                count += 1
+        except Exception as e:
+            logger.warning(f"Error collecting from {source_name}: {e}")
+        logger.info(f"Collected {count:,} samples from {source_name}")
+    
+    # Shuffle the combined corpus
+    random.shuffle(corpus)
+    logger.info(f"Total corpus size: {len(corpus):,} samples")
+    
+    return corpus
 
 
 def train_bpe_tokenizer(
@@ -418,6 +431,7 @@ def train_bpe_tokenizer(
     output_dir: str = "./models/tokenizer",
     max_samples_per_source: int | None = None,
     special_tokens: list[str] | None = None,
+    use_parallel: bool = True,
 ) -> PreTrainedTokenizerFast:
     """
     Train a BPE tokenizer on domain-specific corpus.
@@ -492,14 +506,20 @@ def train_bpe_tokenizer(
     # Train on combined corpus
     logger.info("Starting tokenizer training...")
     
-    def corpus_iterator():
-        yield from combined_corpus_iterator(
-            ecom_samples=max_samples_per_source,
-            financial_samples=max_samples_per_source,
-            generic_samples=max_samples_per_source,
-        )
-    
-    tokenizer.train_from_iterator(corpus_iterator(), trainer=trainer)
+    if use_parallel and max_samples_per_source:
+        # Use parallel collection for bounded datasets (faster)
+        corpus = collect_corpus_fast(max_samples_per_source)
+        logger.info(f"Training on {len(corpus):,} samples...")
+        tokenizer.train_from_iterator(iter(corpus), trainer=trainer, length=len(corpus))
+    else:
+        # Use streaming iterator for unbounded/large datasets
+        def corpus_iterator():
+            yield from combined_corpus_iterator(
+                ecom_samples=max_samples_per_source,
+                financial_samples=max_samples_per_source,
+                generic_samples=max_samples_per_source,
+            )
+        tokenizer.train_from_iterator(corpus_iterator(), trainer=trainer)
     
     # Add post-processor for [CLS] and [SEP]
     tokenizer.post_processor = processors.TemplateProcessing(
