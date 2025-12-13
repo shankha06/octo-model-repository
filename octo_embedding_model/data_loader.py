@@ -752,6 +752,8 @@ def create_combined_pretraining_dataset(
         fineweb_max = fineweb_config.get("max_samples", max_samples)
         fineweb = load_fineweb_edu(
             subset=fineweb_config.get("subset", "sample-10BT"),
+            max_samples=fineweb_max,
+        )
         all_texts.extend(fineweb.texts)
         print(f"Generic samples: {len(fineweb):,}")
 

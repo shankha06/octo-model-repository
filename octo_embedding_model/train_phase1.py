@@ -500,7 +500,7 @@ def main():
 
     num_epochs = 10  # Will likely stop based on max_steps
     for epoch in range(start_epoch, num_epochs):
-        if is_ddp:
+        if is_ddp and sampler is not None:
             sampler.set_epoch(epoch)
 
         global_step = train_epoch(
