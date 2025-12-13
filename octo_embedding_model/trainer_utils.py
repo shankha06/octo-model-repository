@@ -26,7 +26,7 @@ class DDPConfig:
     """Configuration for Distributed Data Parallel training."""
 
     backend: str = "nccl"
-    find_unused_parameters: bool = False
+    find_unused_parameters: bool = True  # Required for MoE models where not all experts are used
     gradient_as_bucket_view: bool = True
 
 

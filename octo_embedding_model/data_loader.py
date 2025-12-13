@@ -302,36 +302,59 @@ def load_finmteb(
     english_only: bool = True,
 ) -> PreTrainingDataset:
     """
-    Load FinMTEB dataset for finance domain pre-training.
+    Load financial datasets for finance domain pre-training.
     
-    Dataset: TheFinAI/finmteb
+    Uses multiple public finance datasets as alternatives to FinMTEB.
     Note: Filtered to English-only content.
     """
-    try:
-        dataset = load_dataset("TheFinAI/finmteb", split=split)
-        texts = []
-
-        for item in dataset:
-            # FinMTEB contains various sub-tasks, extract text content
-            if "text" in item:
-                texts.append(item["text"])
-            elif "sentence1" in item:
-                texts.append(item["sentence1"])
-                if "sentence2" in item:
-                    texts.append(item["sentence2"])
-
-            if max_samples and len(texts) >= max_samples * 2:  # Over-sample for filtering
+    texts = []
+    
+    # List of alternative finance datasets to try
+    finance_datasets = [
+        ("ashraq/financial-news", ["headline", "title", "text"]),
+        ("zeroshot/twitter-financial-news-topic", ["text", "tweet", "sentence"]),
+        ("nickmuchi/financial-classification", ["text", "sentence", "content"]),
+    ]
+    
+    for dataset_id, text_fields in finance_datasets:
+        try:
+            print(f"Loading finance dataset: {dataset_id}")
+            dataset = load_dataset(dataset_id, split=split, streaming=True)
+            
+            sample_count = 0
+            target = (max_samples * 2) if max_samples else None  # Over-sample for filtering
+            
+            for item in dataset:
+                # Try multiple possible text fields
+                text = None
+                for field in text_fields:
+                    if field in item and item[field]:
+                        text = str(item[field])
+                        break
+                
+                if text and len(text) > 20:
+                    texts.append(text)
+                    sample_count += 1
+                
+                if target and sample_count >= target:
+                    break
+            
+            print(f"Loaded {sample_count} samples from {dataset_id}")
+            
+            # If we got enough, stop trying more datasets
+            if max_samples and len(texts) >= max_samples:
                 break
-
-        # Filter to English only
-        if english_only:
-            texts = filter_english(texts)
-            print(f"Filtered to {len(texts)} English samples from FinMTEB")
-
-        return PreTrainingDataset(texts[:max_samples] if max_samples else texts)
-    except Exception as e:
-        print(f"Warning: Could not load FinMTEB: {e}")
-        return PreTrainingDataset([])
+                
+        except Exception as e:
+            print(f"Warning: Could not load {dataset_id}: {e}")
+            continue
+    
+    # Filter to English only
+    if english_only and texts:
+        texts = filter_english(texts)
+        print(f"Filtered to {len(texts)} English samples from finance datasets")
+    
+    return PreTrainingDataset(texts[:max_samples] if max_samples else texts)
 
 
 def load_esci(
@@ -532,6 +555,50 @@ def load_fineweb_edu(
         return PreTrainingDataset([])
 
 
+def load_ecomniverse(
+    split: str = "train",
+    max_samples: int | None = None,
+    english_only: bool = True,
+) -> PreTrainingDataset:
+    """
+    Load Ecom-niverse dataset for e-commerce domain pre-training.
+    
+    Dataset: thebajajra/Ecom-niverse
+    Note: Filtered to English-only content.
+    """
+    print(f"Loading Ecom-niverse dataset (max {max_samples:,} samples)..." if max_samples else "Loading Ecom-niverse dataset...")
+    
+    try:
+        dataset = load_dataset(
+            "thebajajra/Ecom-niverse",
+            split=split,
+            streaming=True,
+        )
+        
+        texts = []
+        target = max_samples * 2 if max_samples else None  # Over-sample for filtering
+        
+        for item in dataset:
+            # Extract text from various fields
+            for field in ["title", "description", "text", "product_name", "product_description", "name"]:
+                if field in item and item[field]:
+                    text = str(item[field])
+                    if len(text) > 50:
+                        if not english_only or is_likely_english(text):
+                            texts.append(text)
+                            if target and len(texts) >= target:
+                                break
+            if target and len(texts) >= target:
+                break
+        
+        texts = texts[:max_samples] if max_samples else texts
+        print(f"Loaded {len(texts):,} English samples from Ecom-niverse")
+        return PreTrainingDataset(texts)
+    except Exception as e:
+        print(f"Warning: Could not load Ecom-niverse: {e}")
+        return PreTrainingDataset([])
+
+
 def create_combined_pretraining_dataset(
     config: dict[str, Any],
     debug: bool = False,
@@ -539,47 +606,49 @@ def create_combined_pretraining_dataset(
     """
     Create combined pre-training dataset from multiple sources.
     
-    Includes FineWeb-Edu with 15% mixture for grammatical competence.
+    Sources:
+    - Finance: ashraq/financial-news, etc.
+    - E-commerce: thebajajra/Ecom-niverse
+    - General: HuggingFaceFW/fineweb-edu
     """
-    max_samples = config.get("debug", {}).get("max_samples_per_dataset", 1000) if debug else None
+    # Default to 3M samples per dataset, 1K for debug
+    default_max_samples = 3000000
+    debug_max = config.get("debug", {}).get("max_samples_per_dataset", 1000)
+    max_samples = debug_max if debug else config.get("max_samples_per_dataset", default_max_samples)
+    
+    print(f"\n=== Loading Pre-training Data (max {max_samples:,} per source) ===")
 
-    domain_texts = []
-    general_texts = []
+    all_texts = []
 
-    # Load FinMTEB (domain-specific)
+    # Load Finance datasets
     if config.get("finance", {}).get("finmteb", {}).get("enabled", True):
-        finmteb = load_finmteb(max_samples=max_samples)
-        domain_texts.extend(finmteb.texts)
-        print(f"Loaded {len(finmteb)} samples from FinMTEB")
+        finance_max = config.get("finance", {}).get("finmteb", {}).get("max_samples", max_samples)
+        finmteb = load_finmteb(max_samples=finance_max)
+        all_texts.extend(finmteb.texts)
+        print(f"Finance samples: {len(finmteb):,}")
 
-    # Load FineWeb-Edu (general domain for grammatical competence)
+    # Load E-commerce datasets (Ecom-niverse)
+    if config.get("ecommerce", {}).get("enabled", True):
+        ecom_max = config.get("ecommerce", {}).get("max_samples", max_samples)
+        ecom = load_ecomniverse(max_samples=ecom_max)
+        all_texts.extend(ecom.texts)
+        print(f"E-commerce samples: {len(ecom):,}")
+
+    # Load FineWeb-Edu (general domain)
     fineweb_config = config.get("general", {}).get("fineweb_edu", {})
     if fineweb_config.get("enabled", True):
-        mixture_ratio = fineweb_config.get("mixture_ratio", 0.15)
-        fineweb_max_samples = fineweb_config.get("max_samples", 100000)
-        
-        if debug:
-            fineweb_max_samples = min(fineweb_max_samples, max_samples or 1000)
-        
+        fineweb_max = fineweb_config.get("max_samples", max_samples)
         fineweb = load_fineweb_edu(
             subset=fineweb_config.get("subset", "sample-10BT"),
-            max_samples=fineweb_max_samples,
+            max_samples=fineweb_max,
         )
-        general_texts.extend(fineweb.texts)
+        all_texts.extend(fineweb.texts)
+        print(f"Generic samples: {len(fineweb):,}")
 
-    # Calculate target mixture (15% FineWeb-Edu, 85% domain-specific)
-    if domain_texts and general_texts:
-        # Calculate how many general texts to use for 15% mixture
-        target_general_count = int(len(domain_texts) * mixture_ratio / (1 - mixture_ratio))
-        general_texts = general_texts[:target_general_count]
-        print(f"Using {len(general_texts)} FineWeb-Edu samples ({mixture_ratio*100:.0f}% mixture)")
-
-    # Combine and shuffle
-    all_texts = domain_texts + general_texts
+    # Shuffle combined dataset
     random.shuffle(all_texts)
 
-    print(f"Total pre-training samples: {len(all_texts)} "
-          f"(domain: {len(domain_texts)}, general: {len(general_texts)})")
+    print(f"\n=== Total pre-training samples: {len(all_texts):,} ===")
 
     return PreTrainingDataset(all_texts)
 

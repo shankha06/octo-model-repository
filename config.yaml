@@ -163,46 +163,56 @@ phase2:
 # Datasets (HuggingFace)
 # ============================================
 data:
+  # Global max samples per dataset (3M default)
+  max_samples_per_dataset: 3000000
+
+  # E-commerce datasets
+  ecommerce:
+    enabled: true
+    dataset_id: "thebajajra/Ecom-niverse"
+    split: "train"
+    max_samples: 3000000
+
   # Finance datasets
   finance:
     finmteb:
       enabled: true
-      dataset_id: "TheFinAI/finmteb"
+      dataset_id: "ashraq/financial-news"  # Public alternative
       split: "train"
-      max_samples: null  # null = use all
+      max_samples: 3000000
       
     convfinqa:
       enabled: true
       dataset_id: "MehdiHosseiniMoghadam/ConvFinQA"
       split: "train"
-      max_samples: 50000
+      max_samples: 3000000
       
-  # Retail datasets
+  # Retail datasets (for Phase 2 contrastive)
   retail:
     esci:
       enabled: true
       dataset_id: "tasksource/esci"
       split: "train"
-      max_samples: 100000
+      max_samples: 3000000
       use_substitutes_as_hard_negatives: true
       
-  # General regularization
+  # General/Web datasets
   general:
     msmarco:
       enabled: true
       dataset_id: "ms_marco"
       subset: "v1.1"
       split: "train"
-      max_samples: 50000
+      max_samples: 3000000
       
-    # FineWeb-Edu for grammatical competence (Phase 1 only)
+    # FineWeb-Edu for grammatical competence
     fineweb_edu:
       enabled: true
       dataset_id: "HuggingFaceFW/fineweb-edu"
-      subset: "sample-10BT"  # Use 10B token sample for faster loading
+      subset: "sample-10BT"
       split: "train"
       mixture_ratio: 0.15  # 15% of pre-training data
-      max_samples: 100000
+      max_samples: 3000000
       
   # Debug small datasets for local testing
   debug:
@@ -219,7 +229,7 @@ data:
 # ============================================
 distributed:
   backend: "nccl"
-  find_unused_parameters: false
+  find_unused_parameters: true  # Required for MoE models
   gradient_as_bucket_view: true
   
   # Cluster settings
