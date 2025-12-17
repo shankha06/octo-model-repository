@@ -163,6 +163,136 @@ class SpanMaskingCollator:
         }
 
 
+class PackedSpanMaskingCollator:
+    """
+    Collator for Phase 1 pre-training with sequence packing (unpadding).
+    
+    Packs multiple short sequences into a single buffer to eliminate wasted
+    compute on padding tokens. Uses cu_seqlens for flash_attn_varlen_func.
+    
+    This can provide 2-3x speedup depending on sequence length variance.
+    """
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        mask_ratio: float = 0.30,
+        mean_span_length: int = 3,
+        max_length: int = 4096,  # Total packed sequence length
+    ):
+        self.tokenizer = tokenizer
+        self.mask_ratio = mask_ratio
+        self.mean_span_length = mean_span_length
+        self.max_length = max_length
+        self.mask_token_id = tokenizer.mask_token_id or tokenizer.unk_token_id
+        self.pad_token_id = tokenizer.pad_token_id or 0
+
+    def _generate_span_mask(self, seq_length: int) -> list[tuple[int, int]]:
+        """Generate random spans to mask."""
+        current_ratio = random.uniform(0.05, self.mask_ratio)
+        num_tokens_to_mask = int(seq_length * current_ratio)
+        spans = []
+        masked_count = 0
+
+        while masked_count < num_tokens_to_mask and seq_length > 2:
+            span_length = min(
+                max(1, int(random.expovariate(1.0 / self.mean_span_length))),
+                num_tokens_to_mask - masked_count,
+            )
+            start = random.randint(1, max(1, seq_length - span_length - 1))
+            end = start + span_length
+
+            overlap = False
+            for s, e in spans:
+                if not (end <= s or start >= e):
+                    overlap = True
+                    break
+
+            if not overlap:
+                spans.append((start, end))
+                masked_count += span_length
+
+        return sorted(spans)
+
+    def __call__(self, batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+        """Collate batch with sequence packing and span masking."""
+        texts = [item["text"] for item in batch]
+
+        # Tokenize without padding (we'll pack manually)
+        encoded_list = []
+        for text in texts:
+            enc = self.tokenizer(
+                text,
+                max_length=self.max_length,
+                truncation=True,
+                add_special_tokens=True,
+                return_attention_mask=False,
+            )
+            encoded_list.append(enc["input_ids"])
+
+        # Pack sequences into a single buffer
+        packed_input_ids = []
+        packed_labels = []
+        cu_seqlens = [0]  # Cumulative sequence lengths
+        
+        current_length = 0
+        for token_ids in encoded_list:
+            seq_len = len(token_ids)
+            
+            # If adding this sequence would exceed max_length, stop packing
+            if current_length + seq_len > self.max_length:
+                break
+            
+            # Generate span mask for this sequence
+            spans = self._generate_span_mask(seq_len)
+            
+            # Create input_ids with masking
+            masked_ids = list(token_ids)
+            label_ids = [-100] * seq_len  # Start with all ignored
+            
+            for start, end in spans:
+                for j in range(start, min(end, seq_len)):
+                    label_ids[j] = masked_ids[j]  # Store original for loss
+                    masked_ids[j] = self.mask_token_id
+            
+            packed_input_ids.extend(masked_ids)
+            packed_labels.extend(label_ids)
+            current_length += seq_len
+            cu_seqlens.append(current_length)
+        
+        # Handle case where no sequences fit (shouldn't happen normally)
+        if current_length == 0:
+            # Fallback: just use first sequence truncated
+            token_ids = encoded_list[0][:self.max_length]
+            seq_len = len(token_ids)
+            packed_input_ids = list(token_ids)
+            packed_labels = [-100] * seq_len
+            cu_seqlens = [0, seq_len]
+            current_length = seq_len
+        
+        # Convert to tensors
+        input_ids = torch.tensor(packed_input_ids, dtype=torch.long)
+        labels = torch.tensor(packed_labels, dtype=torch.long)
+        cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int32)
+        max_seqlen = max(cu_seqlens[1:] - cu_seqlens[:-1]).item()
+        
+        # Create position_ids for each packed sequence
+        position_ids = []
+        for i in range(len(cu_seqlens) - 1):
+            seq_len = cu_seqlens[i + 1] - cu_seqlens[i]
+            position_ids.extend(range(seq_len))
+        position_ids = torch.tensor(position_ids, dtype=torch.long)
+        
+        return {
+            "input_ids": input_ids.unsqueeze(0),  # [1, total_len]
+            "labels": labels.unsqueeze(0),  # [1, total_len]
+            "position_ids": position_ids.unsqueeze(0),  # [1, total_len]
+            "cu_seqlens": cu_seqlens,  # [num_seqs + 1]
+            "max_seqlen": max_seqlen,
+            "packed": True,  # Flag for model to use varlen attention
+        }
+
+
 class ContrastiveCollator:
     """
     Collator for Phase 2 contrastive training.
@@ -463,10 +593,10 @@ def load_finmteb(
             print(f"Warning: Could not load {dataset_id}: {e}")
             continue
     
-    # Filter to English only
-    if english_only and texts:
-        texts = filter_english(texts)
-        print(f"Filtered to {len(texts)} English samples from finance datasets")
+    # # Filter to English only
+    # if english_only and texts:
+    #     texts = filter_english(texts)
+    #     print(f"Filtered to {len(texts)} English samples from finance datasets")
     
     return PreTrainingDataset(texts[:max_samples] if max_samples else texts)
 

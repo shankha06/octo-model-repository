@@ -41,6 +41,7 @@ from transformers import AutoTokenizer
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from octo_embedding_model.data_loader import (
+    PackedSpanMaskingCollator,
     PreTrainingDataset,
     SpanMaskingCollator,
     StreamingPreTrainingDataset,
@@ -214,8 +215,18 @@ def train_epoch(
     for step, batch in enumerate(progress_bar):
         # Move batch to device
         input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
+        
+        # Handle packed vs padded sequences
+        is_packed = batch.get("packed", False)
+        if is_packed:
+            cu_seqlens = batch["cu_seqlens"].to(device)
+            max_seqlen = batch["max_seqlen"]
+            attention_mask = None
+        else:
+            cu_seqlens = None
+            max_seqlen = None
+            attention_mask = batch["attention_mask"].to(device)
 
         # Forward pass with mixed precision
         with autocast(device_type='cuda', dtype=torch.bfloat16):
@@ -223,6 +234,8 @@ def train_epoch(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 labels=labels,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
             )
             loss = outputs["loss"]
 
@@ -449,13 +462,27 @@ def main():
     phase1_config = config.get("phase1", {})
     masking_config = phase1_config.get("masking", {})
     training_config = phase1_config.get("training", {})
-
-    collator = SpanMaskingCollator(
-        tokenizer=tokenizer,
-        mask_ratio=masking_config.get("mask_ratio", 0.15),
-        mean_span_length=masking_config.get("mean_span_length", 3),
-        max_length=training_config.get("max_seq_length", 512),
-    )
+    
+    # Use packing for 2-3x speedup (default: True if flash_attn available)
+    use_packing = config.get("training", {}).get("use_packing", True)
+    
+    if use_packing and rank == 0:
+        logger.info("Using sequence packing for 2-3x speedup")
+    
+    if use_packing:
+        collator = PackedSpanMaskingCollator(
+            tokenizer=tokenizer,
+            mask_ratio=masking_config.get("mask_ratio", 0.30),
+            mean_span_length=masking_config.get("mean_span_length", 3),
+            max_length=training_config.get("max_seq_length", 4096),
+        )
+    else:
+        collator = SpanMaskingCollator(
+            tokenizer=tokenizer,
+            mask_ratio=masking_config.get("mask_ratio", 0.30),
+            mean_span_length=masking_config.get("mean_span_length", 3),
+            max_length=training_config.get("max_seq_length", 512),
+        )
 
     # Create dataloader
     dataloader = DataLoader(

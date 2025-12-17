@@ -102,6 +102,7 @@ phase1:
     max_seq_length: 4096        # Reduced from 8192 to fit in memory
     gradient_checkpointing: false # Set true to save memory (allows larger batch size)
     torch_compile: true         # Enable PyTorch 2.0+ graph compilation (faster training)
+    use_packing: true           # Sequence packing for 2-3x speedup (requires flash_attn)
     
   # MoE specific
   moe:

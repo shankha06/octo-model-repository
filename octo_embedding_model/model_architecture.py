@@ -7,7 +7,7 @@ from typing import Optional, Tuple, List
 
 # Check for Flash Attention 2 availability (Dao-AILab)
 try:
-    from flash_attn import flash_attn_func
+    from flash_attn import flash_attn_func, flash_attn_varlen_func
     DAO_FLASH_ATTN_AVAILABLE = True
 except ImportError:
     DAO_FLASH_ATTN_AVAILABLE = False
@@ -124,7 +124,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.q_norm = DeepSeekRMSNorm(self.q_lora_rank)
         self.kv_norm = DeepSeekRMSNorm(self.kv_lora_rank)
 
-    def forward(self, hidden_states, attention_mask, rotary_emb):
+    def forward(self, hidden_states, attention_mask, rotary_emb, cu_seqlens=None, max_seqlen=None):
         batch, seq_len, _ = hidden_states.shape
         
         # 1. Query Processing
@@ -163,28 +163,47 @@ class MultiHeadLatentAttention(nn.Module):
         k_final = torch.cat([k_nope, k_rope], dim=-1)
 
         # 5. Attention (Flash Attention 2 if available)
+        if DAO_FLASH_ATTN_AVAILABLE and cu_seqlens is not None:
+            # 5a. Dao-AILab Flash Attention with variable length (Packed sequences)
+            # Requires [total_len, heads, head_dim] input format (no batch dim)
+            q_fa = q_final.squeeze(0).transpose(0, 1)  # [seq, heads, dim] -> [heads, seq, dim] -> need [seq, heads, dim]
+            # Actually flash_attn_varlen expects [total_q, num_heads, head_dim]
+            q_flat = q_final.reshape(-1, self.num_heads, self.qk_head_dim)  # [total_len, heads, head_dim]
+            k_flat = k_final.reshape(-1, self.num_heads, self.qk_head_dim)
+            v_flat = v.reshape(-1, self.num_heads, self.v_head_dim)
+            
+            cu_seqlens_q = cu_seqlens.to(q_flat.device)
+            cu_seqlens_k = cu_seqlens_q  # Same for self-attention
+            
+            attn_output = flash_attn_varlen_func(
+                q_flat, k_flat, v_flat,
+                cu_seqlens_q=cu_seqlens_q,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_q=max_seqlen,
+                max_seqlen_k=max_seqlen,
+                dropout_p=0.0,
+                softmax_scale=None,
+                causal=False,
+            )
+            
+            # Reshape back: [total_len, heads, v_head_dim] -> [batch, seq, heads*v_head_dim]
+            attn_output = attn_output.reshape(batch, seq_len, -1)
+            output = self.o_proj(attn_output)
+            return output
+
         if DAO_FLASH_ATTN_AVAILABLE:
-            # 5a. Dao-AILab Flash Attention (Fastest)
-            # Requires [batch, seq, heads, head_dim] input format
+            # 5b. Dao-AILab Flash Attention (standard, for padded sequences)
             q_fa = q_final.transpose(1, 2)
             k_fa = k_final.transpose(1, 2)
             v_fa = v.transpose(1, 2)
             
-            # Flash Attn 2 assumes unpadded or specially handled data. 
-            # Ideally use flash_attn_varlen_func with unpad_input for padded data.
-            # Here we use the standard func which is faster but attends to padding if not careful.
-            # Since we masked inputs with large negative values in 'extended_mask', standard attention works.
-            # For flash_attn, strictly speaking, we rely on the model learning to ignore padding 
-            # or the user unpadding data.
             attn_output = flash_attn_func(
                 q_fa, k_fa, v_fa,
                 dropout_p=0.0,
-                softmax_scale=None, # Uses 1/sqrt(d) by default
+                softmax_scale=None,
                 causal=False,
             )
             
-            # Reshape back: [batch, seq, heads, head_dim] -> [batch, seq, heads*head_dim]
-            # No need to transpose again as output is already [batch, seq, heads, dim]
             output = self.o_proj(attn_output.reshape(batch, seq_len, -1))
             return output
 
@@ -357,11 +376,11 @@ class ChromeMoEModel(nn.Module):
         self.norm_final = DeepSeekRMSNorm(config.hidden_size)
         self.pooling_head = LatentAttentionPooling(config)
 
-    def _layer_forward(self, layer, x, attention_mask):
+    def _layer_forward(self, layer, x, attention_mask, cu_seqlens=None, max_seqlen=None):
         # Pre-Norm -> Attention -> Residual
         residual = x
         x_norm = layer["norm1"](x)
-        attn_out = layer["attn"](x_norm, attention_mask, self.rotary_emb)
+        attn_out = layer["attn"](x_norm, attention_mask, self.rotary_emb, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
         x = residual + attn_out
         
         # Pre-Norm -> MoE -> Residual
@@ -371,23 +390,26 @@ class ChromeMoEModel(nn.Module):
         x = residual + moe_out
         return x
         
-    def forward(self, input_ids, attention_mask=None):
+    def forward(self, input_ids, attention_mask=None, cu_seqlens=None, max_seqlen=None):
         # 1. Embedding
         x = self.embed_tokens(input_ids)
         
-        # 2. Expand Mask for Bidirectional Attention (Crucial for Embeddings)
-        # Unlike GPT (Causal), embedding models see the whole sentence.
-        if attention_mask is None:
-            attention_mask = torch.ones_like(input_ids)
-        
-        # Create mask
-        extended_mask = attention_mask[:, None, None, :]
-        extended_mask = (1.0 - extended_mask) * -10000.0
+        # 2. Handle packed sequences vs padded sequences
+        if cu_seqlens is not None:
+            # Packed sequence mode: no attention mask needed, use cu_seqlens
+            extended_mask = None
+        else:
+            # Padded sequence mode: create attention mask
+            if attention_mask is None:
+                attention_mask = torch.ones_like(input_ids)
+            
+            # Create mask for bidirectional attention
+            extended_mask = attention_mask[:, None, None, :]
+            extended_mask = (1.0 - extended_mask) * -10000.0
         
         # 3. Transformer Layers
         for layer in self.layers:
             if self.config.gradient_checkpointing and self.training:
-                # Custom forward function for checkpointing
                 def create_custom_forward(module):
                     def custom_forward(*args):
                         return self._layer_forward(module, *args)
@@ -397,10 +419,12 @@ class ChromeMoEModel(nn.Module):
                     create_custom_forward(layer),
                     x,
                     extended_mask,
+                    cu_seqlens,
+                    max_seqlen,
                     use_reentrant=False
                 )
             else:
-                x = self._layer_forward(layer, x, extended_mask)
+                x = self._layer_forward(layer, x, extended_mask, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
             
         # 4. Final Norm
         last_hidden_state = self.norm_final(x)
