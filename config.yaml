@@ -168,7 +168,7 @@ data:
   streaming: false
   
   # Global max samples per dataset (3M default)
-  max_samples_per_dataset: 3000000
+  max_samples_per_dataset: 100000
 
   # E-commerce datasets
   ecommerce:
@@ -220,13 +220,8 @@ data:
       
   # Debug small datasets for local testing
   debug:
-    max_samples_per_dataset: 1000
-    
-  # Preprocessing
-  preprocessing:
-    max_length: 512
-    truncation: true
-    padding: "max_length"
+    max_samples_per_dataset: 10000
+  
 
 # ============================================
 # Distributed Training (DDP)
@@ -259,7 +254,7 @@ wandb:
     - "moe"
     - "finance"
     - "retail"
-  log_interval: 10
+  log_interval: 100
   save_code: true
   
   # Metrics to log
@@ -282,7 +277,7 @@ training:
   # Logging
   logging:
     level: "INFO"
-    log_steps: 10
+    log_steps: 100
     
   # Output
   output_dir: "./models/chroma-moe-embedding"
