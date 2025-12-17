@@ -168,7 +168,7 @@ data:
   streaming: false
   
   # Global max samples per dataset (3M default)
-  max_samples_per_dataset: 100000
+  max_samples_per_dataset: 1000
 
   # E-commerce datasets
   ecommerce:
@@ -277,7 +277,7 @@ training:
   # Logging
   logging:
     level: "INFO"
-    log_steps: 100
+    log_steps: 10
     
   # Output
   output_dir: "./models/chroma-moe-embedding"

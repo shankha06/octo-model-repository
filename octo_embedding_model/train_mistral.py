@@ -31,7 +31,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
 )
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 # Configure logging
 logging.basicConfig(
@@ -319,8 +319,8 @@ def train_model(
     """
     logger.info("Starting training...")
     
-    # Create training arguments
-    training_args = TrainingArguments(
+    # Create SFT config (trl 0.26+ API)
+    sft_config = SFTConfig(
         output_dir=train_config.output_dir,
         num_train_epochs=train_config.num_train_epochs,
         per_device_train_batch_size=train_config.per_device_train_batch_size,
@@ -336,6 +336,8 @@ def train_model(
         lr_scheduler_type=train_config.lr_scheduler_type,
         save_strategy=train_config.save_strategy,
         report_to="none",  # Disable wandb by default
+        max_seq_length=train_config.max_seq_length,
+        dataset_text_field="text" if formatting_func is None else None,
     )
     
     # Create trainer with appropriate data handling
@@ -346,9 +348,8 @@ def train_model(
             train_dataset=dataset,
             peft_config=peft_config,
             formatting_func=formatting_func,
-            max_seq_length=train_config.max_seq_length,
-            tokenizer=tokenizer,
-            args=training_args,
+            processing_class=tokenizer,
+            args=sft_config,
         )
     else:
         # Use pre-formatted dataset with 'text' column
@@ -356,10 +357,8 @@ def train_model(
             model=model,
             train_dataset=dataset,
             peft_config=peft_config,
-            dataset_text_field="text",
-            max_seq_length=train_config.max_seq_length,
-            tokenizer=tokenizer,
-            args=training_args,
+            processing_class=tokenizer,
+            args=sft_config,
         )
     
     # Train
@@ -561,7 +560,7 @@ def evaluate_model(
 # ============================================================================
 
 def run_pipeline(
-    data_path: str,
+    data_path: str = "databricks/databricks-dolly-15k",
     model_id: str = "mistralai/Mistral-7B-Instruct-v0.3",
     output_dir: str = "./output",
     do_train: bool = True,
@@ -687,8 +686,9 @@ Examples:
     parser.add_argument(
         "--data-path",
         type=str,
-        required=True,
-        help="Path to training data (JSON/JSONL file or HuggingFace dataset)"
+        default="databricks/databricks-dolly-15k",
+        required=False,
+        help="Path to training data (JSON/JSONL file or HuggingFace dataset). Default: databricks/databricks-dolly-15k"
     )
     
     # Model arguments
@@ -718,6 +718,21 @@ Examples:
 def main():
     """Main entry point."""
     args = parse_args()
+    
+    # Check if any pipeline step is selected
+    if not any([args.do_train, args.do_merge, args.do_quantize, args.do_evaluate]):
+        print("=" * 60)
+        print("No pipeline steps selected!")
+        print("=" * 60)
+        print("\nUse one or more of the following flags:")
+        print("  --do-train     Run QLoRA fine-tuning")
+        print("  --do-merge     Merge LoRA adapters into base model")
+        print("  --do-quantize  Apply NVFP4 quantization")
+        print("  --do-evaluate  Evaluate the model")
+        print("\nExample:")
+        print("  python train_mistral.py --do-train --do-merge")
+        print()
+        return
     
     # Run pipeline
     run_pipeline(
