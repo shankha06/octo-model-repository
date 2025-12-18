@@ -798,8 +798,8 @@ def load_fineweb_edu(
     english_only: bool = True,
 ) -> PreTrainingDataset:
     """
-    Load FineWeb-Edu dataset for general grammatical competence.
-    Optimized for speed and robustness against streaming errors.
+    Load FineWeb-Edu dataset optimized for high-throughput streaming.
+    Uses batch processing to minimize Python loop overhead.
     """
     print(f"Loading FineWeb-Edu dataset ({'max ' + str(max_samples) if max_samples else 'all'} samples)...")
     
@@ -812,45 +812,48 @@ def load_fineweb_edu(
             streaming=True,
         )
 
-        # 2. Limit stream efficiently
+        # 2. Optimization: Drop unused columns immediately 
+        # This saves bandwidth and parsing time.
+        dataset = dataset.select_columns(["text"])
+
+        # 3. Limit stream
         if max_samples:
             dataset = dataset.take(max_samples)
 
-        # 3. Robust "Peek" Check (The Fix)
-        # We verify the dataset is not empty and has the expected column before iterating.
-        # This prevents crashes if the stream is dead or the schema changed.
+        # 4. Create a Batched Iterator
+        # Iterating by batch (e.g., 1000 rows at a time) reduces Python function call 
+        # overhead by 1000x compared to single-row iteration.
+        batch_size = 10000
+        iterator = dataset.iter(batch_size=batch_size)
+        
+        texts = []
+        
         try:
-            # We create a temporary iterator to peek. 
-            # Note: Since 'dataset' is an IterableDataset, this does NOT consume 
-            # items from the main loop we run later.
-            sample_item = next(iter(dataset))
+            # 5. Robust "Peek" (Without restarting stream)
+            # We fetch the first batch to validate schema/connection.
+            first_batch = next(iterator)
             
-            # Verify 'text' column exists
-            if "text" not in sample_item:
-                print(f"Warning: 'text' column missing in {subset}. Found keys: {list(sample_item.keys())}")
+            if "text" not in first_batch:
+                warnings.warn(f"Column 'text' missing in {subset}. Found: {list(first_batch.keys())}")
                 return PreTrainingDataset([])
-                
+            
+            # Add first batch data
+            texts.extend(first_batch["text"])
+            
+            # 6. Fast Consumption
+            # Consume the remaining batches from the SAME iterator.
+            for batch in iterator:
+                texts.extend(batch["text"])
+
         except StopIteration:
-            print(f"Warning: Dataset {subset} is empty.")
+            warnings.warn(f"Dataset {subset} is empty.")
             return PreTrainingDataset([])
-        except Exception as e:
-            print(f"Warning: Connection error while peeking dataset: {e}")
-            return PreTrainingDataset([])
-
-        # 4. Fast Extraction
-        # List comprehension is the fastest method here since we don't need to merge columns.
-        # We use .get() to be safe against rows with missing data.
-        texts = [
-            row.get("text", "") 
-            for row in dataset 
-            if row.get("text") is not None
-        ]
-
+            
         print(f"Loaded {len(texts):,} samples from FineWeb-Edu")
         return PreTrainingDataset(texts)
 
     except Exception as e:
-        print(f"Warning: Could not load FineWeb-Edu: {e}")
+        print(f"Error loading FineWeb-Edu: {e}")
         return PreTrainingDataset([])
 
 def load_ecomniverse(
@@ -912,7 +915,7 @@ def load_ecomniverse(
         dataset = dataset.map(
             batch_format, 
             batched=True, 
-            batch_size=75000,
+            batch_size=20000,
             remove_columns=column_names
         )
 

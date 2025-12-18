@@ -568,7 +568,7 @@ def main():
         logger.info(f"Starting training with {precision} precision...")
         logger.info(f"Flash Attention: {'enabled' if hasattr(torch.nn.functional, 'scaled_dot_product_attention') else 'disabled'}")
 
-    num_epochs = 10  # Will likely stop based on max_steps
+    num_epochs = 2  # Will likely stop based on max_steps
     for epoch in range(start_epoch, num_epochs):
         if is_ddp and sampler is not None:
             sampler.set_epoch(epoch)

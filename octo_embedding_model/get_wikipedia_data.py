@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_PATH = Path("data/filtered_wiki_companies.parquet")
 DEFAULT_MAX_PAGES = 100_000
-CHECKPOINT_INTERVAL = 5000  # Save checkpoint every N pages
-MIN_CONTENT_LENGTH = 500
+CHECKPOINT_INTERVAL = 10000  # Save checkpoint every N pages
+MIN_CONTENT_LENGTH = 1000
 
 
 # =============================================================================
@@ -352,7 +352,7 @@ class WikipediaExtractor:
                 count = len(self.extracted_data)
                 
                 # Log progress
-                if count % 100 == 0:
+                if count % 1000 == 0:
                     self._log_progress(count, page["title"])
                 
                 # Checkpoint save
