@@ -362,7 +362,7 @@ def combined_corpus_iterator(
     exhausted = set()
     batch_size = 50000  # Larger batches reduce loop overhead
     total_yielded = 0
-    next_log_threshold = 100000
+    next_log_threshold = 250000
     
     while len(exhausted) < len(iterators):
         # Build batch from each source proportionally using islice
