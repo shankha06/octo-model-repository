@@ -242,7 +242,11 @@ def merge_and_quantize(
                     inputs = tokenizer(txt, return_tensors="pt").to(m.device)
                     m(**inputs)
 
-            quant_config = mtq.QuantizeConfig(quant_algorithm="fp4")
+            try:
+                quant_config = mtq.QuantizeConfig(quant_algorithm="fp4")
+            except Exception as e:
+                logger.warning(f"FP4 config failed: ({e}). Falling back to FP8.")
+                quant_config = mtq.QuantizeConfig(quant_algorithm="fp8")
             model = mtq.quantize(model, config=quant_config, forward_loop=calibration_loop)
             
             nvfp4_path = os.path.join(output_dir, "nvfp4_model")

@@ -72,7 +72,7 @@ uv run python octo_embedding_model/train_tokenizer.py \
 # 96K vocabulary for larger model
 uv run python octo_embedding_model/train_tokenizer.py \
     --vocab-size 98304 \
-    --max-samples 7500000 \
+    --max-samples 15500000 \
     --output-dir ./models/tokenizer \
 
 # Verify tokenizer
