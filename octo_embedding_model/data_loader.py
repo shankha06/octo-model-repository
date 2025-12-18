@@ -764,40 +764,35 @@ def load_fineweb_edu(
 ) -> PreTrainingDataset:
     """
     Load FineWeb-Edu dataset for general grammatical competence.
-    
-    Dataset: HuggingFaceFW/fineweb-edu
-    Uses the sample-10BT subset for faster loading.
-    Note: Filtered to English-only content.
+    Optimized for speed using streaming and efficient slicing.
     """
+    print(f"Loading FineWeb-Edu dataset ({'max ' + str(max_samples) if max_samples else 'all'} samples)...")
+    
     try:
+        # 1. Load in streaming mode (Crucial for FineWeb 10BT)
         dataset = load_dataset(
             "HuggingFaceFW/fineweb-edu",
-            subset,
+            name=subset,
             split=split,
-            streaming=True,  # Use streaming for large dataset
+            streaming=True,
         )
 
-        texts = []
-        # Over-sample for filtering
-        target = max_samples * 2 if max_samples else None
-        
-        for item in dataset:
-            text = item.get("text", "")
-            # Filter short texts and apply English check inline for efficiency
-            if text and len(text) > 200:
-                if not english_only or is_likely_english(text):
-                    texts.append(text)
+        # 2. Efficiently limit the stream
+        # This prevents iterating through the whole dataset if you only need a subset
+        if max_samples:
+            dataset = dataset.take(max_samples)
 
-            if target and len(texts) >= target:
-                break
+        # 3. Fast Extraction
+        # FineWeb already has a 'text' column, so we just extract it directly.
+        # We iterate once to materialize the data into RAM.
+        texts = [row["text"] for row in dataset]
 
-        texts = texts[:max_samples] if max_samples else texts
-        print(f"Loaded {len(texts)} English samples from FineWeb-Edu")
+        print(f"Loaded {len(texts):,} samples from FineWeb-Edu")
         return PreTrainingDataset(texts)
+
     except Exception as e:
         print(f"Warning: Could not load FineWeb-Edu: {e}")
         return PreTrainingDataset([])
-
 
 def load_ecomniverse(
     split: str = "train",
@@ -806,38 +801,62 @@ def load_ecomniverse(
 ) -> PreTrainingDataset:
     """
     Load Ecom-niverse dataset for e-commerce domain pre-training.
-    
-    Dataset: thebajajra/Ecom-niverse
-    Note: Filtered to English-only content.
+    Optimized for speed using batched mapping and efficient text joining.
     """
-    print(f"Loading Ecom-niverse dataset (max {max_samples:,} samples)..." if max_samples else "Loading Ecom-niverse dataset...")
+    print(f"Loading Ecom-niverse dataset ({'max ' + str(max_samples) if max_samples else 'all'} samples)...")
     
     try:
+        # 1. Load in streaming mode to start immediately
         dataset = load_dataset(
             "thebajajra/Ecom-niverse",
             split=split,
             streaming=True,
         )
-        
-        texts = []
-        target = max_samples * 2 if max_samples else None  # Over-sample for filtering
-        
-        for item in dataset:
-            # Extract text from various fields
-            for field in ["title", "description", "text", "product_name", "product_description", "name"]:
-                if field in item and item[field]:
-                    text = str(item[field])
-                    if len(text) > 50:
-                        if not english_only or is_likely_english(text):
-                            texts.append(text)
-                            if target and len(texts) >= target:
-                                break
-            if target and len(texts) >= target:
-                break
-        
-        texts = texts[:max_samples] if max_samples else texts
-        print(f"Loaded {len(texts):,} English samples from Ecom-niverse")
+
+        # 2. Limit samples efficiently before processing
+        if max_samples:
+            dataset = dataset.take(max_samples)
+
+        # 3. Define a fast batch processing function
+        def batch_format(examples):
+            # Identify columns dynamically or specify them
+            # Assuming typical cols: 'title', 'description', 'feature', etc.
+            # We skip 'None' values and join strictly string columns
+            
+            batch_texts = []
+            
+            # Iterate through the batch (lists of values)
+            # This is faster than processing row-by-row
+            keys = examples.keys()
+            num_items = len(next(iter(examples.values())))
+            
+            for i in range(num_items):
+                # Efficiently join all non-empty fields for this row
+                row_text = " ".join([
+                    str(examples[k][i]) 
+                    for k in keys 
+                    if examples[k][i] is not None and str(examples[k][i]).strip()
+                ])
+                batch_texts.append(row_text)
+                
+            return {"text": batch_texts}
+
+        # 4. Apply mapping in batches (Vectorized-like speed)
+        # remove_columns saves memory by dropping original data
+        dataset = dataset.map(
+            batch_format, 
+            batched=True, 
+            batch_size=1000,
+            remove_columns=list(dataset.features.keys()) if hasattr(dataset, 'features') else None
+        )
+
+        # 5. Materialize to list (triggers the streaming download/process)
+        # We assume the user wants a list of strings based on usage of 'texts'
+        texts = [row["text"] for row in dataset]
+
+        print(f"Loaded {len(texts):,} samples from Ecom-niverse")
         return PreTrainingDataset(texts)
+
     except Exception as e:
         print(f"Warning: Could not load Ecom-niverse: {e}")
         return PreTrainingDataset([])
