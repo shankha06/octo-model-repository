@@ -764,12 +764,12 @@ def load_fineweb_edu(
 ) -> PreTrainingDataset:
     """
     Load FineWeb-Edu dataset for general grammatical competence.
-    Optimized for speed using streaming and efficient slicing.
+    Optimized for speed and robustness against streaming errors.
     """
     print(f"Loading FineWeb-Edu dataset ({'max ' + str(max_samples) if max_samples else 'all'} samples)...")
     
     try:
-        # 1. Load in streaming mode (Crucial for FineWeb 10BT)
+        # 1. Load in streaming mode
         dataset = load_dataset(
             "HuggingFaceFW/fineweb-edu",
             name=subset,
@@ -777,15 +777,39 @@ def load_fineweb_edu(
             streaming=True,
         )
 
-        # 2. Efficiently limit the stream
-        # This prevents iterating through the whole dataset if you only need a subset
+        # 2. Limit stream efficiently
         if max_samples:
             dataset = dataset.take(max_samples)
 
-        # 3. Fast Extraction
-        # FineWeb already has a 'text' column, so we just extract it directly.
-        # We iterate once to materialize the data into RAM.
-        texts = [row["text"] for row in dataset]
+        # 3. Robust "Peek" Check (The Fix)
+        # We verify the dataset is not empty and has the expected column before iterating.
+        # This prevents crashes if the stream is dead or the schema changed.
+        try:
+            # We create a temporary iterator to peek. 
+            # Note: Since 'dataset' is an IterableDataset, this does NOT consume 
+            # items from the main loop we run later.
+            sample_item = next(iter(dataset))
+            
+            # Verify 'text' column exists
+            if "text" not in sample_item:
+                print(f"Warning: 'text' column missing in {subset}. Found keys: {list(sample_item.keys())}")
+                return PreTrainingDataset([])
+                
+        except StopIteration:
+            print(f"Warning: Dataset {subset} is empty.")
+            return PreTrainingDataset([])
+        except Exception as e:
+            print(f"Warning: Connection error while peeking dataset: {e}")
+            return PreTrainingDataset([])
+
+        # 4. Fast Extraction
+        # List comprehension is the fastest method here since we don't need to merge columns.
+        # We use .get() to be safe against rows with missing data.
+        texts = [
+            row.get("text", "") 
+            for row in dataset 
+            if row.get("text") is not None
+        ]
 
         print(f"Loaded {len(texts):,} samples from FineWeb-Edu")
         return PreTrainingDataset(texts)
@@ -801,57 +825,63 @@ def load_ecomniverse(
 ) -> PreTrainingDataset:
     """
     Load Ecom-niverse dataset for e-commerce domain pre-training.
-    Optimized for speed using batched mapping and efficient text joining.
+    Optimized for speed and streaming compatibility.
     """
     print(f"Loading Ecom-niverse dataset ({'max ' + str(max_samples) if max_samples else 'all'} samples)...")
     
     try:
-        # 1. Load in streaming mode to start immediately
+        # 1. Load in streaming mode
         dataset = load_dataset(
             "thebajajra/Ecom-niverse",
             split=split,
             streaming=True,
         )
 
-        # 2. Limit samples efficiently before processing
+        # 2. Limit samples efficiently
         if max_samples:
             dataset = dataset.take(max_samples)
 
-        # 3. Define a fast batch processing function
+        # 3. Safe Column Detection (The Fix)
+        # Streaming datasets often lack metadata. We peek at the first item 
+        # to find column names so we can remove them later.
+        try:
+            # We create a temporary iterator to peek without consuming the main dataset object
+            sample_item = next(iter(dataset))
+            column_names = list(sample_item.keys())
+        except StopIteration:
+            print("Warning: Dataset is empty.")
+            return PreTrainingDataset([])
+
+        # 4. Define fast batch processing
         def batch_format(examples):
-            # Identify columns dynamically or specify them
-            # Assuming typical cols: 'title', 'description', 'feature', etc.
-            # We skip 'None' values and join strictly string columns
-            
             batch_texts = []
+            # 'examples' is a dict of lists: {'col1': [val1, val2], 'col2': [val1, val2]}
+            # We assume all columns in the batch have the same length
+            num_rows = len(next(iter(examples.values())))
             
-            # Iterate through the batch (lists of values)
-            # This is faster than processing row-by-row
-            keys = examples.keys()
-            num_items = len(next(iter(examples.values())))
-            
-            for i in range(num_items):
-                # Efficiently join all non-empty fields for this row
-                row_text = " ".join([
-                    str(examples[k][i]) 
-                    for k in keys 
-                    if examples[k][i] is not None and str(examples[k][i]).strip()
-                ])
-                batch_texts.append(row_text)
+            for i in range(num_rows):
+                # Join all non-None, non-empty fields for this row
+                # We use the detected 'column_names' to ensure we iterate all fields
+                row_parts = []
+                for k in column_names:
+                    val = examples[k][i]
+                    if val is not None and str(val).strip():
+                        row_parts.append(str(val))
+                
+                batch_texts.append(" ".join(row_parts))
                 
             return {"text": batch_texts}
 
-        # 4. Apply mapping in batches (Vectorized-like speed)
-        # remove_columns saves memory by dropping original data
+        # 5. Apply mapping
+        # remove_columns is now safe because we manually extracted 'column_names'
         dataset = dataset.map(
             batch_format, 
             batched=True, 
-            batch_size=1000,
-            remove_columns=list(dataset.features.keys()) if hasattr(dataset, 'features') else None
+            batch_size=75000,
+            remove_columns=column_names
         )
 
-        # 5. Materialize to list (triggers the streaming download/process)
-        # We assume the user wants a list of strings based on usage of 'texts'
+        # 6. Materialize to list
         texts = [row["text"] for row in dataset]
 
         print(f"Loaded {len(texts):,} samples from Ecom-niverse")
@@ -859,6 +889,7 @@ def load_ecomniverse(
 
     except Exception as e:
         print(f"Warning: Could not load Ecom-niverse: {e}")
+        # Return empty dataset on failure to prevent pipeline crash
         return PreTrainingDataset([])
 
 

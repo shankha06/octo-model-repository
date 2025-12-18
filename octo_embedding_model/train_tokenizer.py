@@ -360,9 +360,9 @@ def combined_corpus_iterator(
     ]
     
     exhausted = set()
-    batch_size = 50000  # Larger batches reduce loop overhead
+    batch_size = 100000  # Larger batches reduce loop overhead
     total_yielded = 0
-    next_log_threshold = 600000
+    next_log_threshold = 1000000
     
     while len(exhausted) < len(iterators):
         # Build batch from each source proportionally using islice
@@ -401,7 +401,7 @@ def combined_corpus_iterator(
         # Progress logging with threshold comparison (faster than modulo)
         if total_yielded >= next_log_threshold:
             logger.info(f"Processed {total_yielded:,} samples...")
-            next_log_threshold = ((total_yielded // 600000) + 1) * 600000
+            next_log_threshold = ((total_yielded // 1000000) + 1) * 1000000
 
 
 def collect_corpus_fast(
