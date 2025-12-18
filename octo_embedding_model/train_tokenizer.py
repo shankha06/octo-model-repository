@@ -344,51 +344,64 @@ def combined_corpus_iterator(
 ) -> Iterator[str]:
     """
     Combined iterator over all datasets with specified mix ratios.
-    Uses batched round-robin for better performance.
+    Uses batched round-robin with optimized collection for 10M+ rows.
     """
+    from itertools import islice
+    
     # Create iterators
     ecom_iter = get_ecomniverse_iterator(max_samples=ecom_samples)
     financial_iter = get_edgar_iterator(max_samples=financial_samples)
     generic_iter = get_generic_iterator(max_samples=generic_samples)
     
-    iterators = {
-        "ecom": (ecom_iter, ecom_ratio),
-        "financial": (financial_iter, financial_ratio),
-        "generic": (generic_iter, generic_ratio),
-    }
+    iterators = [
+        ("ecom", ecom_iter, ecom_ratio),
+        ("financial", financial_iter, financial_ratio),
+        ("generic", generic_iter, generic_ratio),
+    ]
     
     exhausted = set()
-    batch_size = 10000  # Process in batches for better throughput
+    batch_size = 50000  # Larger batches reduce loop overhead
     total_yielded = 0
+    next_log_threshold = 100000
     
     while len(exhausted) < len(iterators):
-        # Build batch from each source proportionally
+        # Build batch from each source proportionally using islice
         batch = []
         
-        for source, (iterator, ratio) in iterators.items():
+        for source, iterator, ratio in iterators:
             if source in exhausted:
                 continue
             
             # Calculate how many to take from this source
             count = max(1, int(batch_size * ratio))
             
-            for _ in range(count):
-                try:
-                    text = next(iterator)
-                    batch.append(text)
-                except StopIteration:
-                    exhausted.add(source)
-                    break
+            # Use islice for efficient batch collection
+            chunk = list(islice(iterator, count))
+            if len(chunk) < count:
+                exhausted.add(source)
+            
+            batch.extend(chunk)
         
-        # Shuffle batch and yield
-        random.shuffle(batch)
-        for text in batch:
-            yield text
-            total_yielded += 1
+        if not batch:
+            break
         
-        # Progress logging every 10K samples
-        if total_yielded % 100000 == 0 and total_yielded > 0:
+        batch_len = len(batch)
+        
+        # Partial Fisher-Yates shuffle (only shuffle first ~10% for randomness)
+        # Full shuffle is O(n); partial is O(k) where k << n
+        shuffle_count = min(batch_len, max(1000, batch_len // 10))
+        for i in range(shuffle_count):
+            j = random.randint(i, batch_len - 1)
+            batch[i], batch[j] = batch[j], batch[i]
+        
+        # Yield entire batch using yield from (faster than individual yields)
+        yield from batch
+        total_yielded += batch_len
+        
+        # Progress logging with threshold comparison (faster than modulo)
+        if total_yielded >= next_log_threshold:
             logger.info(f"Processed {total_yielded:,} samples...")
+            next_log_threshold = ((total_yielded // 250000) + 1) * 250000
 
 
 def collect_corpus_fast(
