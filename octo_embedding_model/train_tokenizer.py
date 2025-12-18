@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import random
@@ -406,10 +407,18 @@ def combined_corpus_iterator(
 
 def collect_corpus_fast(
     max_samples_per_source: int | None = None,
+    data_dir: str | None = None,
 ) -> list[str]:
     """
     Collect corpus data from all sources.
     Collects all data upfront for faster BPE training.
+    
+    Args:
+        max_samples_per_source: Maximum samples from each data source
+        data_dir: Directory to save the collected corpus data (optional)
+    
+    Returns:
+        List of text samples
     """
     logger.info("Collecting corpus data...")
     
@@ -435,6 +444,16 @@ def collect_corpus_fast(
     random.shuffle(corpus)
     logger.info(f"Total corpus size: {len(corpus):,} samples")
     
+    # Save corpus data if data_dir is specified
+    if data_dir:
+        os.makedirs(data_dir, exist_ok=True)
+        corpus_path = os.path.join(data_dir, "corpus.jsonl")
+        logger.info(f"Saving corpus data to {corpus_path}...")
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            for text in corpus:
+                f.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+        logger.info(f"Saved {len(corpus):,} samples to {corpus_path}")
+    
     return corpus
 
 
@@ -442,6 +461,7 @@ def train_bpe_tokenizer(
     vocab_size: int = 65536,
     min_frequency: int = 2,
     output_dir: str = "./models/tokenizer",
+    data_dir: str = "./data",
     max_samples_per_source: int | None = None,
     special_tokens: list[str] | None = None,
     use_parallel: bool = True,
@@ -453,6 +473,7 @@ def train_bpe_tokenizer(
         vocab_size: Target vocabulary size (64K or 96K recommended)
         min_frequency: Minimum frequency for a token to be included
         output_dir: Directory to save the tokenizer
+        data_dir: Directory to save the collected corpus data
         max_samples_per_source: Maximum samples from each data source
         special_tokens: Additional special tokens to add
         
@@ -521,7 +542,7 @@ def train_bpe_tokenizer(
     
     if use_parallel and max_samples_per_source:
         # Use parallel collection for bounded datasets (faster)
-        corpus = collect_corpus_fast(max_samples_per_source)
+        corpus = collect_corpus_fast(max_samples_per_source, data_dir=data_dir)
         logger.info(f"Training on {len(corpus):,} samples...")
         tokenizer.train_from_iterator(iter(corpus), trainer=trainer, length=len(corpus))
     else:
@@ -625,6 +646,12 @@ def main():
         help="Directory to save tokenizer",
     )
     parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="./data",
+        help="Directory to save collected corpus data",
+    )
+    parser.add_argument(
         "--min-frequency",
         type=int,
         default=2,
@@ -666,14 +693,16 @@ def main():
         vocab_size=args.vocab_size,
         min_frequency=args.min_frequency,
         output_dir=args.output_dir,
+        data_dir=args.data_dir,
         max_samples_per_source=max_samples,
-        use_parallel=False,
+        use_parallel=True,
     )
     
     # Verify tokenizer
     verify_tokenizer(tokenizer)
     
     logger.info(f"\n✓ Tokenizer saved to {args.output_dir}")
+    logger.info(f"✓ Corpus data saved to {args.data_dir}")
     logger.info("To use in training, set tokenizer path in config.yaml")
 
 
