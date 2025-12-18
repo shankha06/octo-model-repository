@@ -31,6 +31,8 @@ echo "OMP_NUM_THREADS: $OMP_NUM_THREADS"
 echo "Config: $CONFIG_FILE"
 echo "=============================================="
 
+uv run python octo_embedding_model/get_wikipedia_data.py --max-pages 50000
+
 # Export environment variables
 export OMP_NUM_THREADS=$OMP_NUM_THREADS
 export TOKENIZERS_PARALLELISM=false  # Avoid tokenizers warning

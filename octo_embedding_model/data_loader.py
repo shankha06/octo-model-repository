@@ -20,6 +20,8 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer
+import pyarrow.parquet as pq
+from pathlib import Path
 
 
 @dataclass
@@ -408,7 +410,7 @@ class StreamingPreTrainingDataset(torch.utils.data.IterableDataset):
         self.config = config
         self.debug = debug
         self.max_samples = 1000 if debug else max_samples_per_source
-        self._estimated_size = self.max_samples * 3  # 3 sources
+        self._estimated_size = self.max_samples * 4  # 4 sources (finance, ecommerce, generic, wiki)
         
     def __len__(self) -> int:
         """Estimated size for progress bars."""
@@ -485,12 +487,45 @@ class StreamingPreTrainingDataset(torch.utils.data.IterableDataset):
         except Exception:
             pass
     
+    def _stream_wiki_companies(self):
+        """Stream Wikipedia company data from local parquet file."""
+        wiki_path = Path("data/filtered_wiki_companies.parquet")
+        
+        if not wiki_path.exists():
+            return
+        
+        count = 0
+        try:
+            parquet_file = pq.ParquetFile(wiki_path)
+            for batch in parquet_file.iter_batches(batch_size=1000, columns=["text"]):
+                for text in batch.to_pydict()["text"]:
+                    if not text or len(text) < 100:
+                        continue
+                    
+                    # Chunk long texts
+                    if len(text) > 5000:
+                        for i in range(0, len(text), 2000):
+                            chunk = text[i:i+2500]
+                            if len(chunk) > 200:
+                                yield {"text": chunk}
+                                count += 1
+                                if count >= self.max_samples:
+                                    return
+                    else:
+                        yield {"text": text}
+                        count += 1
+                        if count >= self.max_samples:
+                            return
+        except Exception:
+            pass
+    
     def __iter__(self):
         """Interleave all sources for balanced training."""
         sources = [
             self._stream_finance(),
             self._stream_ecommerce(),
             self._stream_generic(),
+            self._stream_wiki_companies(),
         ]
         
         # Round-robin interleaving

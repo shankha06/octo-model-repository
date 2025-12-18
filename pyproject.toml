@@ -28,6 +28,10 @@ dependencies = [
     "trl>=0.26.1",
     "auto-gptq>=0.7.1",
     "nvidia-modelopt>=0.40.0",
+    "pyarrow>=22.0.0",
+    "wikipedia>=1.4.0",
+    "pandas>=2.3.3",
+    "fastparquet>=2024.11.0",
 ]
 
 [project.urls]

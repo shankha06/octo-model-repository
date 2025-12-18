@@ -20,13 +20,16 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 import os
 import random
 import sys
 from pathlib import Path
 from typing import Iterator
+import glob
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from datasets import load_dataset
 from tokenizers import (
@@ -175,9 +178,10 @@ def _chunk_long_text(text: str, chunk_size: int = 2000, overlap: int = 500, min_
     return chunks
 
 
-def collect_ecommerce_corpus(max_samples: int | None = None, batch_size: int = 10_000) -> list[str]:
+def iter_ecommerce_corpus(max_samples: int | None = None) -> Iterator[str]:
     """
-    Collect e-commerce dataset texts using optimized batched mapping.
+    Generator that yields e-commerce texts one at a time.
+    Memory-efficient: only processes one batch at a time.
     """
     logger.info("Loading e-commerce dataset...")
     
@@ -189,88 +193,53 @@ def collect_ecommerce_corpus(max_samples: int | None = None, batch_size: int = 1
     
     dataset = _load_dataset_with_fallback(dataset_options, "e-commerce")
     if dataset is None:
-        return []
+        return
     
-    # OPTIMIZATION 1: Dynamic Field Detection
-    # Inspect the first item to find which relevant columns actually exist.
-    # This avoids checking 6 different dictionary keys for every single row.
+    # Dynamic field detection
     try:
-        # Create a temporary iterator to peek without consuming the main dataset
         first_item = next(iter(dataset))
         available_columns = list(first_item.keys())
     except StopIteration:
         logger.warning("Dataset is empty.")
-        return []
+        return
 
     target_fields = ["title", "description", "text", "product_name", "product_description", "name"]
     active_fields = [f for f in target_fields if f in available_columns]
     
     if not active_fields:
         logger.warning(f"No valid text fields found. Available: {available_columns}")
-        return []
+        return
         
     logger.info(f"Active fields detected: {active_fields}")
 
-    # OPTIMIZATION 2: Batched Processing
-    # This runs the extraction logic on chunks of 1000 rows at a time
-    def batch_extract(examples):
-        # examples is a dict of lists: {'title': ['t1', 't2'], ...}
-        batch_outputs = []
-        
-        # Get the number of rows in this batch safely
-        num_rows = len(examples[active_fields[0]])
-        
-        for i in range(num_rows):
-            row_extracted = []
-            for field in active_fields:
-                val = examples[field][i]
-                # Fast validation: check existence and length > 50
-                if val:
-                    s_val = str(val)
-                    if len(s_val) > 50:
-                        row_extracted.append(s_val)
-            batch_outputs.append(row_extracted)
-            
-        # Return a single column containing lists of strings
-        return {"extracted_texts": batch_outputs}
-
-    # Apply Map: This creates a lazy generator (doesn't run immediately)
-    # remove_columns saves memory by dropping the unused raw data
-    processed_dataset = dataset.map(
-        batch_extract,
-        batched=True,
-        batch_size=100_000,
-        remove_columns=available_columns
-    )
-
-    corpus = []
+    count = 0
     log_threshold = 1_000_000
     
-    # Iterate the stream until we reach max_samples
-    # The map function is triggered here as we consume rows
-    for row in processed_dataset:
-        extracted = row["extracted_texts"]
-        if extracted:
-            corpus.extend(extracted)
-            
-        # Check exit condition
-        if max_samples and len(corpus) >= max_samples:
-            corpus = corpus[:max_samples]
-            break
-            
-        # Efficient Logging
-        if len(corpus) >= log_threshold:
-             logger.info(f"  E-commerce: collected {len(corpus):,} samples...")
-             log_threshold += 1_000_000
+    # Stream through dataset
+    for item in dataset:
+        for field in active_fields:
+            val = item.get(field)
+            if val:
+                s_val = str(val)
+                if len(s_val) > 50:
+                    yield s_val
+                    count += 1
+                    
+                    if max_samples and count >= max_samples:
+                        logger.info(f"Collected {count:,} samples from e-commerce")
+                        return
+                    
+                    if count >= log_threshold:
+                        logger.info(f"  E-commerce: yielded {count:,} samples...")
+                        log_threshold += 1_000_000
 
-    logger.info(f"Collected {len(corpus):,} samples from e-commerce")
-    return corpus
+    logger.info(f"Collected {count:,} samples from e-commerce")
 
 
-def collect_financial_corpus(max_samples: int | None = None, batch_size: int = 10000) -> list[str]:
+def iter_financial_corpus(max_samples: int | None = None) -> Iterator[str]:
     """
-    Collect financial dataset texts in batches.
-    Returns a list instead of yielding for better performance.
+    Generator that yields financial texts one at a time.
+    Memory-efficient: streams data directly.
     """
     logger.info("Loading financial dataset...")
     
@@ -284,11 +253,11 @@ def collect_financial_corpus(max_samples: int | None = None, batch_size: int = 1
     
     dataset = _load_dataset_with_fallback(dataset_options, "financial")
     if dataset is None:
-        return []
+        return
     
     fields = ("text", "headline", "title", "content", "body", "filing_text", "document")
-    corpus = []
-    batch = []
+    count = 0
+    log_threshold = 1_000_000
     
     for item in dataset:
         # Get first available text field
@@ -297,180 +266,354 @@ def collect_financial_corpus(max_samples: int | None = None, batch_size: int = 1
         if not text or len(text) < 20:
             continue
         
-        # Chunk long documents
+        # Chunk long documents and yield each chunk
         if len(text) > 5000:
-            batch.extend(_chunk_long_text(text))
+            for chunk in _chunk_long_text(text):
+                yield chunk
+                count += 1
+                if max_samples and count >= max_samples:
+                    logger.info(f"Collected {count:,} samples from financial")
+                    return
         else:
-            batch.append(text)
+            yield text
+            count += 1
+            if max_samples and count >= max_samples:
+                logger.info(f"Collected {count:,} samples from financial")
+                return
         
-        # Process in batches
-        if len(batch) >= batch_size:
-            corpus.extend(batch)
-            batch = []
-            if max_samples and len(corpus) >= max_samples:
-                corpus = corpus[:max_samples]
-                break
-            if len(corpus) % 1_000_000 == 0:
-                logger.info(f"  Financial: collected {len(corpus):,} samples...")
+        if count >= log_threshold:
+            logger.info(f"  Financial: yielded {count:,} samples...")
+            log_threshold += 1_000_000
     
-    # Add remaining batch
-    if batch:
-        remaining = max_samples - len(corpus) if max_samples else len(batch)
-        corpus.extend(batch[:remaining])
-    
-    logger.info(f"Collected {len(corpus):,} samples from financial")
-    return corpus
+    logger.info(f"Collected {count:,} samples from financial")
 
 
-def collect_generic_corpus(max_samples: int | None = None, batch_size: int = 10_000) -> list[str]:
+def iter_generic_corpus(max_samples: int | None = None) -> Iterator[str]:
     """
-    Collect generic web dataset texts using optimized batched mapping.
-    Includes fast filtering and chunking.
+    Generator that yields generic web texts one at a time.
+    Optimized with batched processing for high throughput.
     """
     logger.info("Loading generic web dataset...")
     
+    max_samples = max_samples * 2
     dataset_options = [
         ("HuggingFaceFW/fineweb-edu", "sample-10BT"),
         ("HuggingFaceFW/fineweb-edu", "sample-100BT"),
     ]
     
+    # 1. Load Dataset
     dataset = _load_dataset_with_fallback(dataset_options, "generic")
     if dataset is None:
-        return []
+        return
 
-    # OPTIMIZATION 1: Safe Column Detection
-    # Although FineWeb usually has 'text', this prevents crashes if the schema changes
+    # 2. Dynamic Column Detection
     try:
         first_item = next(iter(dataset))
         available_columns = list(first_item.keys())
+        text_col = "text" if "text" in available_columns else next(iter(available_columns))
     except StopIteration:
-        logger.warning("Generic dataset is empty.")
-        return []
+        return
 
-    # Identify the text column (usually "text")
-    text_col = "text" if "text" in available_columns else next(iter(available_columns))
-    logger.info(f"Using column '{text_col}' for generic corpus")
-
-    # OPTIMIZATION 2: Batched Logic
-    # Moves the heavy lifting (len checks & chunking) into the efficient map loop
+    # 3. Define Batched Processor
+    # This runs on chunks (e.g., 1000 items) at a time, reducing Python overhead.
     def batch_process(examples):
-        batch_outputs = []
-        raw_texts = examples[text_col]
-        
-        for text in raw_texts:
-            if not text:
-                batch_outputs.append([]) 
+        outputs = []
+        # 'examples' is a dict of lists. We iterate the list of texts.
+        for text in examples[text_col]:
+            if not text: 
                 continue
                 
-            s_text = str(text)
-            
-            # Filter short texts (< 100 chars)
-            if len(s_text) < 100:
-                batch_outputs.append([])
+            # Filter short
+            if len(text) < 100:
                 continue
                 
-            # Chunk long documents
-            if len(s_text) > 5000:
-                # Assuming _chunk_long_text is available in scope
-                chunks = _chunk_long_text(s_text)
-                batch_outputs.append(chunks)
+            # Chunk long
+            if len(text) > 5000:
+                # Use extend for efficiency (assuming _chunk_long_text returns a list)
+                outputs.extend(_chunk_long_text(text))
             else:
-                batch_outputs.append([s_text])
-                
-        # Returns list of lists to maintain 1:1 mapping with input rows
-        return {"processed_chunks": batch_outputs}
+                outputs.append(text)
+        
+        # Return dict of lists. The 'datasets' library will automatically
+        # flatten this and yield items one by one in the main loop.
+        return {text_col: outputs}
 
-    # Apply Map
+    # 4. Apply Lazy Mapping
+    # 'remove_columns' drops raw data immediately to save RAM.
     processed_dataset = dataset.map(
         batch_process,
         batched=True,
-        batch_size=1000,
+        batch_size=100000,
         remove_columns=available_columns
     )
 
-    corpus = []
+    # 5. Fast Yield Loop
+    count = 0
     log_threshold = 1_000_000
-
-    # OPTIMIZATION 3: Fast Consumption
-    for row in processed_dataset:
-        chunks = row["processed_chunks"]
-        if chunks:
-            corpus.extend(chunks)
-
-        # Check limits
-        if max_samples and len(corpus) >= max_samples:
-            corpus = corpus[:max_samples]
-            break
-            
-        if len(corpus) >= log_threshold:
-            logger.info(f"  Generic: collected {len(corpus):,} samples...")
-            log_threshold += 1_000_000
     
-    logger.info(f"Collected {len(corpus):,} samples from generic")
-    return corpus
+    # Iterate over the pre-processed stream
+    for item in processed_dataset:
+        yield item[text_col]
+        
+        count += 1
+        
+        # Check limits on the *output* count
+        if max_samples and count >= max_samples:
+            logger.info(f"Collected {count:,} samples from generic")
+            return
+
+        if count >= log_threshold:
+            logger.info(f"  Generic: yielded {count:,} samples...")
+            log_threshold += 1_000_000
+
+    logger.info(f"Collected {count:,} samples from generic")
 
 
-def collect_corpus_fast(
-    max_samples_per_source: int | None = None,
-    data_dir: str | None = None,
-) -> list[str]:
+def iter_wiki_companies_corpus(max_samples: int | None = None) -> Iterator[str]:
     """
-    Collect corpus data from all sources using batch-based collection.
-    Much faster than iterator-based approach for large datasets.
+    Generator that yields Wikipedia company texts from local parquet file.
+    Uses the filtered Wikipedia companies data.
+    """
+    wiki_path = Path("data/filtered_wiki_companies.parquet")
+    
+    if not wiki_path.exists():
+        logger.warning(f"Wikipedia companies file not found: {wiki_path}")
+        return
+    
+    logger.info(f"Loading Wikipedia companies from {wiki_path}...")
+    
+    try:
+        parquet_file = pq.ParquetFile(wiki_path)
+        count = 0
+        log_threshold = 100_000
+        
+        for batch in parquet_file.iter_batches(batch_size=10_000, columns=["text"]):
+            for text in batch.to_pydict()["text"]:
+                if not text or len(text) < 100:
+                    continue
+                
+                # Chunk long documents
+                if len(text) > 5000:
+                    for chunk in _chunk_long_text(text):
+                        yield chunk
+                        count += 1
+                        if max_samples and count >= max_samples:
+                            logger.info(f"Collected {count:,} samples from Wikipedia companies")
+                            return
+                else:
+                    yield text
+                    count += 1
+                    if max_samples and count >= max_samples:
+                        logger.info(f"Collected {count:,} samples from Wikipedia companies")
+                        return
+                
+                if count >= log_threshold:
+                    logger.info(f"  Wikipedia companies: yielded {count:,} samples...")
+                    log_threshold += 100_000
+        
+        logger.info(f"Collected {count:,} samples from Wikipedia companies")
+    
+    except Exception as e:
+        logger.warning(f"Error reading Wikipedia companies parquet: {e}")
+        return
+
+
+def _stream_corpus_to_disk(
+    corpus_path: str,
+    max_samples_per_source: int | None = None,
+    write_buffer_size: int = 50_000,
+) -> int:
+    """
+    Stream corpus data from all sources directly to disk as Parquet.
+    Memory-efficient: only holds one write buffer at a time.
     
     Args:
+        corpus_path: Path to save the Parquet file
         max_samples_per_source: Maximum samples from each data source
-        data_dir: Directory to save the collected corpus data (optional)
+        write_buffer_size: Number of samples to buffer before writing as a row group
     
     Returns:
-        List of text samples
+        Total number of samples written
     """
-    logger.info("Collecting corpus data (batch mode)...")
+    logger.info(f"Streaming corpus data to {corpus_path}...")
     
-    # Collect from each source in parallel-ready batches
-    corpus = []
+    total_written = 0
+    write_buffer = []
+    writer = None
+    schema = pa.schema([("text", pa.string())])
     
-    # E-commerce corpus
-    ecom_corpus = collect_ecommerce_corpus(max_samples=max_samples_per_source)
-    corpus.extend(ecom_corpus)
+    def flush_buffer(writer, buffer, schema, corpus_path):
+        """Write buffer to parquet file as a row group."""
+        nonlocal total_written
+        if buffer:
+            table = pa.Table.from_pydict({"text": buffer}, schema=schema)
+            if writer is None:
+                writer = pq.ParquetWriter(corpus_path, schema, compression="snappy")
+            writer.write_table(table)
+        return writer, []
     
-    # Financial corpus
-    financial_corpus = collect_financial_corpus(max_samples=max_samples_per_source)
-    corpus.extend(financial_corpus)
-    
-    # Generic corpus  
-    generic_corpus = collect_generic_corpus(max_samples=max_samples_per_source)
-    corpus.extend(generic_corpus)
-    
-    # Shuffle the combined corpus
-    logger.info(f"Shuffling {len(corpus):,} samples...")
-    random.shuffle(corpus)
-    logger.info(f"Total corpus size: {len(corpus):,} samples")
-    
-    # Save corpus data if data_dir is specified
-    if data_dir:
-        os.makedirs(data_dir, exist_ok=True)
-        corpus_path = os.path.join(data_dir, "corpus.jsonl")
-        logger.info(f"Saving corpus data to {corpus_path}...")
+    try:
+        # Process each source using generators (stream directly to disk)
+        sources = [
+            ("e-commerce", iter_ecommerce_corpus),
+            ("financial", iter_financial_corpus),
+            ("generic", iter_generic_corpus),
+            ("wiki-companies", iter_wiki_companies_corpus),
+        ]
         
-        # Write in larger chunks for better I/O performance
-        write_buffer = []
-        buffer_size = 10000
-        
-        with open(corpus_path, "w", encoding="utf-8") as f:
-            for i, text in enumerate(corpus):
-                write_buffer.append(json.dumps({"text": text}, ensure_ascii=False))
-                if len(write_buffer) >= buffer_size:
-                    f.write("\n".join(write_buffer) + "\n")
-                    write_buffer = []
-            # Write remaining
-            if write_buffer:
-                f.write("\n".join(write_buffer) + "\n")
-        
-        logger.info(f"Saved {len(corpus):,} samples to {corpus_path}")
+        for source_name, collect_func in sources:
+            logger.info(f"Processing {source_name} source...")
+            source_data = collect_func(max_samples=max_samples_per_source)
+            
+            for text in source_data:
+                write_buffer.append(text)
+                
+                if len(write_buffer) >= write_buffer_size:
+                    writer, write_buffer = flush_buffer(writer, write_buffer, schema, corpus_path)
+                    total_written += write_buffer_size
+                    
+                    if total_written % 1_000_000 == 0:
+                        logger.info(f"  Written {total_written:,} samples to disk...")
+            
+            # Flush remaining after each source and update count
+            remaining = len(write_buffer)
+            writer, write_buffer = flush_buffer(writer, write_buffer, schema, corpus_path)
+            total_written += remaining
+            
+            # Clear source data from memory immediately
+            del source_data
+            
+            logger.info(f"  Completed {source_name}: total written = {total_written:,}")
+    finally:
+        if writer is not None:
+            writer.close()
     
-    return corpus
+    logger.info(f"Streaming complete: {total_written:,} samples written to {corpus_path}")
+    return total_written
 
+
+def _shuffle_parquet_file(file_path: str, chunk_size: int = 500_000) -> None:
+    """
+    Shuffle rows in a Parquet file efficiently.
+    Reads the file, shuffles row indices, then writes back.
+    """
+    import shutil
+    
+    logger.info(f"Shuffling corpus parquet file (chunk size: {chunk_size:,})...")
+    
+    # Read the parquet file
+    table = pq.read_table(file_path)
+    total_rows = table.num_rows
+    
+    if total_rows <= chunk_size:
+        # Small file - shuffle in memory
+        indices = list(range(total_rows))
+        random.shuffle(indices)
+        shuffled_table = table.take(indices)
+        pq.write_table(shuffled_table, file_path, compression="snappy")
+        logger.info(f"Shuffled {total_rows:,} rows in memory")
+        return
+    
+    # Large file - use chunked shuffle with multiple passes
+    temp_path = file_path + ".shuffle_tmp"
+    
+    for pass_num in range(2):  # 2 passes for better randomization
+        logger.info(f"  Shuffle pass {pass_num + 1}/2...")
+        
+        table = pq.read_table(file_path)
+        schema = table.schema
+        writer = pq.ParquetWriter(temp_path, schema, compression="snappy")
+        
+        try:
+            for start_idx in range(0, total_rows, chunk_size):
+                end_idx = min(start_idx + chunk_size, total_rows)
+                chunk_indices = list(range(start_idx, end_idx))
+                random.shuffle(chunk_indices)
+                chunk_table = table.take(chunk_indices)
+                writer.write_table(chunk_table)
+        finally:
+            writer.close()
+        
+        shutil.move(temp_path, file_path)
+    
+    logger.info(f"Shuffled {total_rows:,} rows using chunked approach")
+
+
+def _file_line_iterator(file_path: str, batch_size: int = 10_000) -> Iterator[str]:
+    """
+    Memory-efficient iterator over text from a Parquet file.
+    Reads in batches for efficiency.
+    """
+    parquet_file = pq.ParquetFile(file_path)
+    for batch in parquet_file.iter_batches(batch_size=batch_size, columns=["text"]):
+        for text in batch.to_pydict()["text"]:
+            if text:
+                yield text
+
+
+def collect_corpus_streaming(
+    data_dir: str,
+    max_samples_per_source: int | None = None,
+) -> tuple[str, int]:
+    """
+    Collect corpus data by streaming directly to disk as Parquet.
+    Memory-efficient: suitable for 10M+ samples.
+    
+    Args:
+        data_dir: Directory to save the corpus file
+        max_samples_per_source: Maximum samples from each data source
+    
+    Returns:
+        Tuple of (corpus_path, total_samples)
+    """
+    os.makedirs(data_dir, exist_ok=True)
+    corpus_path = os.path.join(data_dir, "corpus.parquet")
+    
+    # Stream to disk
+    total_samples = _stream_corpus_to_disk(
+        corpus_path=corpus_path,
+        max_samples_per_source=max_samples_per_source,
+    )
+    
+    # Shuffle the file
+    _shuffle_parquet_file(corpus_path)
+    
+    return corpus_path, total_samples
+
+def collect_corpus_to_shards(data_dir, max_samples):
+    """
+    Collect corpus data from all sources and save as sharded text files.
+    Includes e-commerce, financial, and generic web data.
+    """
+    import itertools
+    
+    os.makedirs(data_dir, exist_ok=True)
+    shard_size = 100_000
+    current_shard = []
+    shard_idx = 0
+    
+    # Combine all three corpus iterators
+    combined_corpus = itertools.chain(
+        iter_ecommerce_corpus(max_samples),
+        iter_financial_corpus(max_samples),
+        iter_generic_corpus(max_samples),
+        iter_wiki_companies_corpus(max_samples),
+    )
+    
+    # Iterate through combined corpus
+    for i, text in enumerate(combined_corpus):
+        current_shard.append(text)
+        
+        if len(current_shard) >= shard_size:
+            with open(f"{data_dir}/shard_{shard_idx}.txt", "w", encoding="utf-8") as f:
+                f.write("\n".join(current_shard))
+            current_shard = []
+            shard_idx += 1
+            
+    # Save remainder
+    if current_shard:
+        with open(f"{data_dir}/shard_{shard_idx}.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(current_shard))
 
 def train_bpe_tokenizer(
     vocab_size: int = 65536,
@@ -479,86 +622,63 @@ def train_bpe_tokenizer(
     data_dir: str = "./data",
     max_samples_per_source: int | None = None,
     special_tokens: list[str] | None = None,
-) -> PreTrainedTokenizerFast:
-    """
-    Train a BPE tokenizer on domain-specific corpus.
+) -> Tokenizer:
     
-    Args:
-        vocab_size: Target vocabulary size (64K or 96K recommended)
-        min_frequency: Minimum frequency for a token to be included
-        output_dir: Directory to save the tokenizer
-        data_dir: Directory to save the collected corpus data
-        max_samples_per_source: Maximum samples from each data source
-        special_tokens: Additional special tokens to add
-        
-    Returns:
-        Trained tokenizer as PreTrainedTokenizerFast
-    """
-    logger.info(f"Training BPE tokenizer with vocab_size={vocab_size}")
+    logger.info(f"Initializing BPE tokenizer (Vocab: {vocab_size})...")
     
-    # Initialize BPE tokenizer
+    # 1. Setup Tokenizer (Same as before)
     tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))
     
-    # Normalizer: lowercase and unicode normalization
     tokenizer.normalizer = normalizers.Sequence([
         normalizers.NFD(),
         normalizers.Lowercase(),
         normalizers.StripAccents(),
     ])
     
-    # Pre-tokenizer: split on whitespace and punctuation
     tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
         pre_tokenizers.WhitespaceSplit(),
         pre_tokenizers.Punctuation(),
     ])
     
-    # Decoder
     tokenizer.decoder = decoders.BPEDecoder()
+
+    # 2. Setup Special Tokens
+    default_special_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "[BOS]", "[EOS]"]
+    # Assuming SPECIAL_DOMAIN_TOKENS is defined globally
+    domain_tokens = [f"[{t}]" for t in SPECIAL_DOMAIN_TOKENS] if 'SPECIAL_DOMAIN_TOKENS' in globals() else []
     
-    # Define special tokens
-    default_special_tokens = [
-        "[PAD]",
-        "[UNK]", 
-        "[CLS]",
-        "[SEP]",
-        "[MASK]",
-        "[BOS]",
-        "[EOS]",
-    ]
-    
-    all_special_tokens = default_special_tokens.copy()
-    
-    # Add domain-specific terms as special tokens
-    for term in SPECIAL_DOMAIN_TOKENS:
-        all_special_tokens.append(f"[{term}]")
-        
-    if special_tokens:
-        all_special_tokens.extend(special_tokens)
-    
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_special_tokens = []
-    for token in all_special_tokens:
-        if token not in seen:
-            seen.add(token)
-            unique_special_tokens.append(token)
-    
-    # Create trainer
+    all_special_tokens = list(dict.fromkeys(default_special_tokens + domain_tokens + (special_tokens or [])))
+
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
         min_frequency=min_frequency,
-        special_tokens=unique_special_tokens,
+        special_tokens=all_special_tokens,
         show_progress=True,
     )
+
+    # 3. FAST DATA COLLECTION
+    # Instead of streaming to one file, ensure your collection step saves 
+    # multiple .txt files (shards) into data_dir.
+    logger.info("Ensuring corpus data is ready...")
     
-    # Train on combined corpus using batch-based collection
-    logger.info("Starting tokenizer training...")
+    # If the directory is empty, run collection (assumed to save .txt files)
+    if not os.path.exists(data_dir) or not glob.glob(f"{data_dir}/*.txt"):
+        # Modify your collect function to save files directly to data_dir
+        # e.g., corpus_1.txt, corpus_2.txt
+        collect_corpus_to_shards(data_dir=data_dir, max_samples=max_samples_per_source)
+
+    # 4. FAST TRAINING (The Fix)
+    # Get list of all text files
+    files = glob.glob(f"{data_dir}/*.txt")
+    logger.info(f"Training on {len(files)} files using native Rust parallelism...")
     
-    corpus = collect_corpus_fast(max_samples_per_source, data_dir=data_dir)
-    logger.info(f"Training on {len(corpus):,} samples...")
-    tokenizer.train_from_iterator(iter(corpus), trainer=trainer, length=len(corpus))
+    if not files:
+        raise ValueError("No training data found!")
+
+    # .train() handles file I/O in Rust, releasing the GIL and using all CPU cores.
+    tokenizer.train(files, trainer=trainer)
     
-    # Add post-processor for [CLS] and [SEP]
+    # 5. Post-Processing
     tokenizer.post_processor = processors.TemplateProcessing(
         single="[CLS] $A [SEP]",
         pair="[CLS] $A [SEP] $B [SEP]",
@@ -639,8 +759,8 @@ def main():
         "--vocab-size",
         type=int,
         default=65536,
-        choices=[32768, 65536, 98304],
-        help="Vocabulary size (32K, 64K, or 96K)",
+        choices=[32768, 65536, 98304, 131072],
+        help="Vocabulary size (32K, 64K, 96K, or 128K)",
     )
     parser.add_argument(
         "--output-dir",
