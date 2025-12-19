@@ -27,7 +27,12 @@
 # -----------------------------------------------------------------------------
 # Configuration & Defaults
 # -----------------------------------------------------------------------------
-DEFAULT_NUM_GPUS=1
+if command -v nvidia-smi &> /dev/null; then
+    DEFAULT_NUM_GPUS=$(nvidia-smi -L | wc -l)
+    [ "$DEFAULT_NUM_GPUS" -eq 0 ] && DEFAULT_NUM_GPUS=1
+else
+    DEFAULT_NUM_GPUS=1
+fi
 DEFAULT_CONFIG="config.yaml"
 CACHE_DIR="./data/pretraining_cache"
 LOG_FILE="training_phase1.log"

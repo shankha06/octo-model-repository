@@ -72,7 +72,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
+torch._inductor.config.max_autotune_gemm = False
 
 
 
@@ -135,8 +135,22 @@ class ChromaMoEForPretraining(nn.Module):
 
             residual = x
             x_norm = layer["norm2"](x)
-            moe_out = layer["moe"](x_norm)
+            
+            # --- FIX START ---
+            # Capture both output and logits. 
+            # Note: Ensure your backbone's MoE layer returns (output, logits)
+            moe_result = layer["moe"](x_norm)
+            
+            if isinstance(moe_result, tuple):
+                moe_out = moe_result[0]
+                # Collect logits (usually [batch_size*seq_len, num_experts])
+                all_router_logits.append(moe_result[1])
+            else:
+                moe_out = moe_result
+                # If logits are missing, we can't calculate aux loss
+            
             x = residual + moe_out
+            # --- FIX END ---
 
         hidden_states = self.backbone.norm_final(x)
 
@@ -466,7 +480,7 @@ def main():
     if config.get("training", {}).get("torch_compile", True) and hasattr(torch, "compile"):
         if rank == 0:
             logger.info("Compiling model with torch.compile...")
-        model = torch.compile(model)
+        model = torch.compile(model, mode="max-autotune")
 
     # Wrap with DDP
     if is_ddp:
