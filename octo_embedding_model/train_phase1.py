@@ -21,6 +21,7 @@ Usage:
     torchrun --nproc_per_node=2 train_phase1.py --config config.yaml --test-ddp
 """
 
+import math
 import argparse
 import inspect
 import logging
@@ -72,6 +73,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def worker_init_fn(worker_id):
+    """
+    Configures each worker to process a disjoint subset of the data.
+    """
+    worker_info = torch.utils.data.get_worker_info()
+    dataset = worker_info.dataset  # This is the copy specific to this worker
+    
+    # CASE A: If your dataset has a 'files' or 'filepaths' attribute (List[str])
+    # We slice the file list so each worker handles different files.
+    if hasattr(dataset, 'files') and isinstance(dataset.files, list):
+        total_files = len(dataset.files)
+        per_worker = int(math.ceil(total_files / float(worker_info.num_workers)))
+        worker_id = worker_info.id
+        
+        start = worker_id * per_worker
+        end = min(start + per_worker, total_files)
+        
+        # Update the worker's dataset copy to only see its slice
+        dataset.files = dataset.files[start:end]
+        
+    # CASE B: If you implemented a custom sharding method in your Dataset class
+    elif hasattr(dataset, 'set_shard'):
+        dataset.set_shard(worker_id, worker_info.num_workers)
+        
+    # CASE C: If neither, and you can't modify the dataset code easily,
+    # you might have to rely on the iterator logic checking worker info directly,
+    # but explicit slicing here is safer.
 
 class ChromaMoEForPretraining(nn.Module):
     """
@@ -96,6 +124,8 @@ class ChromaMoEForPretraining(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        max_seqlen: int | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass for pre-training.
@@ -105,16 +135,27 @@ class ChromaMoEForPretraining(nn.Module):
         # Get backbone hidden states (before pooling)
         x = self.backbone.embed_tokens(input_ids)
 
-        if attention_mask is None:
-            attention_mask = torch.ones_like(input_ids)
+        # Handle packed sequences vs padded sequences
+        if cu_seqlens is not None:
+            # Packed sequence mode: no attention mask needed
+            extended_mask = None
+        else:
+            if attention_mask is None:
+                attention_mask = torch.ones_like(input_ids)
 
-        extended_mask = attention_mask[:, None, None, :]
-        extended_mask = (1.0 - extended_mask) * -10000.0
+            extended_mask = attention_mask[:, None, None, :]
+            extended_mask = (1.0 - extended_mask) * -10000.0
 
         for layer in self.backbone.layers:
             residual = x
             x_norm = layer["norm1"](x)
-            attn_out = layer["attn"](x_norm, extended_mask, self.backbone.rotary_emb)
+            attn_out = layer["attn"](
+                x_norm, 
+                extended_mask, 
+                self.backbone.rotary_emb,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen
+            )
             x = residual + attn_out
 
             residual = x
@@ -508,12 +549,12 @@ def main():
     dataloader = DataLoader(
         dataset,
         batch_size=training_config.get("per_device_batch_size", 8),
-        shuffle=False if use_streaming else (sampler is None),
-        sampler=sampler,
+        sampler=sampler, 
         collate_fn=collator,
         num_workers=4,
         pin_memory=True,
-        prefetch_factor=2,  # Prefetch for faster data loading
+        prefetch_factor=2,
+        worker_init_fn=worker_init_fn, # <--- ADD THIS
     )
 
     # Create optimizer

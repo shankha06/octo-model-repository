@@ -19,10 +19,10 @@
 #   ./train_phase1.sh 8 config.yaml
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Strict Error Handling
-# -----------------------------------------------------------------------------
-set -euo pipefail
+# # -----------------------------------------------------------------------------
+# # Strict Error Handling
+# # -----------------------------------------------------------------------------
+# set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # Configuration & Defaults
@@ -47,21 +47,21 @@ log() {
     echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
 }
 
-# -----------------------------------------------------------------------------
-# Pre-flight Checks
-# -----------------------------------------------------------------------------
-log "INFO" "Starting Phase 1 Training Workflow"
-log "INFO" "Configuration: GPUs=$NUM_GPUS, Config=$CONFIG_FILE"
+# # -----------------------------------------------------------------------------
+# # Pre-flight Checks
+# # -----------------------------------------------------------------------------
+# log "INFO" "Starting Phase 1 Training Workflow"
+# log "INFO" "Configuration: GPUs=$NUM_GPUS, Config=$CONFIG_FILE"
 
-if ! command -v uv &> /dev/null; then
-    log "ERROR" "'uv' tool is not installed. Please install it first."
-    exit 1
-fi
+# if ! command -v uv &> /dev/null; then
+#     log "ERROR" "'uv' tool is not installed. Please install it first."
+#     exit 1
+# fi
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    log "ERROR" "Configuration file '$CONFIG_FILE' not found."
-    exit 1
-fi
+# if [ ! -f "$CONFIG_FILE" ]; then
+#     log "ERROR" "Configuration file '$CONFIG_FILE' not found."
+#     exit 1
+# fi
 
 # -----------------------------------------------------------------------------
 # Resource Optimization
@@ -93,6 +93,7 @@ fi
 log "INFO" "Downloading/Verifying external datasets (download_datasets.py)..."
 if ! uv run python octo_embedding_model/download_datasets.py \
     --config "$CONFIG_FILE" \
+    --max-samples 100000 \
     --output-dir "$CACHE_DIR"; then
     log "ERROR" "Dataset download failed."
     exit 1

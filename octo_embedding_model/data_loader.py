@@ -577,6 +577,21 @@ class LocalPreTrainingDataset(torch.utils.data.IterableDataset):
     def __len__(self) -> int:
         """Estimated size for progress bars."""
         return self._estimated_size
+
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:  # Single-process data loading
+            iter_start = 0
+            iter_end = len(self.data_source)
+        else:  # Multi-process data loading
+            per_worker = int(math.ceil(len(self.data_source) / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, len(self.data_source))
+            
+        # Only iterate over the slice for this worker
+        for i in range(iter_start, iter_end):
+            yield self.process_item(self.data_source[i])
     
     def _stream_parquet(self, file_path: Path):
         """Stream texts from a Parquet file."""
