@@ -298,20 +298,29 @@ def train_epoch(
             
             total_loss = outputs["loss"]
 
-            # --- FIX 4: Robust Aux Loss Calculation ---
             if aux_loss_fn is not None and "router_logits" in outputs:
                 # Ensure router logits are float32 to prevent underflow in softmax/exp
                 router_logits = outputs["router_logits"].float()
-                aux_loss = aux_loss_fn(router_logits)
 
                 # --- DEBUG CHECK ---
+                # This catches NaNs before they crash the backward pass
                 if torch.isnan(router_logits).any():
-                    print("NaN in Router Logits! Inputs to router were likely NaN.")
+                    if rank == 0:
+                        logger.warning(f"Step {global_step}: NaN in Router Logits! Skipping batch.")
+                    optimizer.zero_grad(set_to_none=True)
+                    continue 
                 # -------------------
                 
-                # 3. --- FIX: Add Router Z-Loss ---
-                # This penalizes large logits to prevent numerical explosion
-                # Recommended coefficient is usually 1e-3 to 1e-4
+                # RE-CALCULATE INDICES:
+                # Because MoELayer is deterministic (no noise), we can find 
+                # selected experts by running TopK on the logits again.
+                _, expert_indices = torch.topk(router_logits, k=top_k, dim=-1)
+
+                # Now we have both arguments required by MoEAuxLoss.forward()
+                aux_loss = aux_loss_fn(router_logits, expert_indices)
+                
+                # Add Router Z-Loss (Stabilizer)
+                # Penalizes large logits to prevent "NaN" explosions later
                 z_loss_coef = 1e-3
                 z_loss = torch.logsumexp(router_logits, dim=-1).pow(2).mean() * z_loss_coef
                 
@@ -319,6 +328,14 @@ def train_epoch(
 
         # Scale loss for gradient accumulation
         loss = total_loss / grad_accum_steps
+
+        # --- FIX: NaN Guard for Total Loss ---
+        if torch.isnan(loss):
+            if rank == 0:
+                logger.warning(f"Step {global_step}: Found NaN in total loss. Skipping batch.")
+            optimizer.zero_grad(set_to_none=True)
+            accumulated_loss = 0.0
+            continue
         
         # Backward pass with scaler
         if scaler is not None:
