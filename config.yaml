@@ -172,7 +172,7 @@ data:
   local_cache: "./data/pretraining_cache"
   
   # Global max samples per dataset (3M default)
-  max_samples_per_dataset: 1000
+  max_samples_per_dataset: 10000
 
   # E-commerce datasets
   ecommerce:

@@ -578,39 +578,53 @@ class LocalPreTrainingDataset(torch.utils.data.IterableDataset):
         """Estimated size for progress bars."""
         return self._estimated_size
 
-    def __iter__(self):
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:  # Single-process data loading
-            iter_start = 0
-            iter_end = len(self.data_source)
-        else:  # Multi-process data loading
-            per_worker = int(math.ceil(len(self.data_source) / float(worker_info.num_workers)))
-            worker_id = worker_info.id
-            iter_start = worker_id * per_worker
-            iter_end = min(iter_start + per_worker, len(self.data_source))
-            
-        # Only iterate over the slice for this worker
-        for i in range(iter_start, iter_end):
-            yield self.process_item(self.data_source[i])
-    
-    def _stream_parquet(self, file_path: Path):
-        """Stream texts from a Parquet file."""
+    def _stream_parquet(self, file_path: Path, worker_id: int = 0, num_workers: int = 1):
+        """
+        Stream texts from a Parquet file with sharding.
+        
+        Args:
+            file_path: Path to parquet file
+            worker_id: Current worker ID
+            num_workers: Total number of workers
+        """
         count = 0
         try:
             parquet_file = pq.ParquetFile(file_path)
+            # Iterate batches
             for batch in parquet_file.iter_batches(batch_size=1000, columns=["text"]):
-                for text in batch.to_pydict()["text"]:
-                    if text and len(text) > 20:
-                        yield {"text": text}
-                        count += 1
-                        if count >= self.max_samples:
-                            return
+                texts = batch.to_pydict()["text"]
+                
+                # Manual sharding: skip records not assigned to this worker
+                for i, text in enumerate(texts):
+                    # Global index for this file stream
+                    global_idx = count
+                    
+                    if global_idx % num_workers == worker_id:
+                        if text and len(text) > 20:
+                            yield {"text": text}
+                    
+                    count += 1
+                    if self.max_samples and count >= self.max_samples:
+                        return
+                        
         except Exception:
             pass
     
     def __iter__(self):
-        """Interleave all cached sources for balanced training."""
-        sources = [self._stream_parquet(f) for f in self.available_files]
+        """Interleave all cached sources for balanced training with worker sharding."""
+        # Get worker info for sharding
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            worker_id = 0
+            num_workers = 1
+        else:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+            
+        sources = [
+            self._stream_parquet(f, worker_id, num_workers) 
+            for f in self.available_files
+        ]
         
         # Round-robin interleaving
         exhausted = [False] * len(sources)

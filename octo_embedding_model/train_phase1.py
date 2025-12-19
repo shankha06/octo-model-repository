@@ -73,33 +73,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def worker_init_fn(worker_id):
-    """
-    Configures each worker to process a disjoint subset of the data.
-    """
-    worker_info = torch.utils.data.get_worker_info()
-    dataset = worker_info.dataset  # This is the copy specific to this worker
-    
-    # CASE A: If your dataset has a 'files' or 'filepaths' attribute (List[str])
-    # We slice the file list so each worker handles different files.
-    if hasattr(dataset, 'files') and isinstance(dataset.files, list):
-        total_files = len(dataset.files)
-        per_worker = int(math.ceil(total_files / float(worker_info.num_workers)))
-        worker_id = worker_info.id
-        
-        start = worker_id * per_worker
-        end = min(start + per_worker, total_files)
-        
-        # Update the worker's dataset copy to only see its slice
-        dataset.files = dataset.files[start:end]
-        
-    # CASE B: If you implemented a custom sharding method in your Dataset class
-    elif hasattr(dataset, 'set_shard'):
-        dataset.set_shard(worker_id, worker_info.num_workers)
-        
-    # CASE C: If neither, and you can't modify the dataset code easily,
-    # you might have to rely on the iterator logic checking worker info directly,
-    # but explicit slicing here is safer.
+
+
 
 class ChromaMoEForPretraining(nn.Module):
     """
@@ -238,8 +213,11 @@ def train_epoch(
     is_ddp: bool = False,
     scaler: GradScaler | None = None,
 ) -> int:
-    """Train for one epoch with mixed precision."""
     model.train()
+    
+    # 1. Determine correct precision for autocast
+    precision = config.get("training", {}).get("precision", "bf16")
+    pt_dtype = torch.float16 if precision == "fp16" else torch.bfloat16
 
     phase1_config = config.get("phase1", {})
     training_config = phase1_config.get("training", {})
@@ -248,6 +226,7 @@ def train_epoch(
 
     rank = dist.get_rank() if is_ddp else 0
     accumulated_loss = 0.0
+
 
     progress_bar = tqdm(
         dataloader,
@@ -272,7 +251,7 @@ def train_epoch(
             attention_mask = batch["attention_mask"].to(device)
 
         # Forward pass with mixed precision
-        with autocast(device_type='cuda', dtype=torch.bfloat16):
+        with autocast(device_type='cuda', dtype=pt_dtype):
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -280,10 +259,21 @@ def train_epoch(
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
-            loss = outputs["loss"]
+            
+            total_loss = outputs["loss"]
+
+            # 3. ADD MISSING AUX LOSS
+            # We assume the model returns 'router_logits' in outputs needed for the loss
+            if aux_loss_fn is not None and "router_logits" in outputs:
+                aux_loss = aux_loss_fn(outputs["router_logits"])
+                total_loss += aux_loss
+            elif aux_loss_fn is not None:
+                # Warning: Your model forward pass needs to return router_logits!
+                # If ChromaMoEModel doesn't expose them, you need to modify it.
+                pass
 
         # Scale loss for gradient accumulation
-        loss = loss / grad_accum_steps
+        loss = total_loss / grad_accum_steps
         
         # Backward pass with scaler
         if scaler is not None:
@@ -554,7 +544,6 @@ def main():
         num_workers=4,
         pin_memory=True,
         prefetch_factor=2,
-        worker_init_fn=worker_init_fn, # <--- ADD THIS
     )
 
     # Create optimizer

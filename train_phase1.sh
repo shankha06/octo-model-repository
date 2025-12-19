@@ -27,7 +27,7 @@
 # -----------------------------------------------------------------------------
 # Configuration & Defaults
 # -----------------------------------------------------------------------------
-DEFAULT_NUM_GPUS=2
+DEFAULT_NUM_GPUS=1
 DEFAULT_CONFIG="config.yaml"
 CACHE_DIR="./data/pretraining_cache"
 LOG_FILE="training_phase1.log"
