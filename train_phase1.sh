@@ -1,44 +1,119 @@
 #!/bin/bash
 # =============================================================================
 # Phase 1 Training Script for Chroma-MoE Embedding Model
+#
+# Description:
+#   Orchestrates the Phase 1 training process, including data preparation
+#   and distributed training execution.
+#
+# Features:
+#   - Automated dependency checking
+#   - Data pre-downloading and caching
+#   - Dynamic hardware resource optimization (OMP_NUM_THREADS)
+#   - Robust error handling and logging
+#
+# Usage:
+#   ./train_phase1.sh [NUM_GPUS] [CONFIG_FILE]
 # 
-# Automatically configures OMP_NUM_THREADS for optimal performance.
-# Usage: ./train_phase1.sh [NUM_GPUS] [CONFIG_FILE]
+# Example:
+#   ./train_phase1.sh 8 config.yaml
 # =============================================================================
 
-set -e
+# -----------------------------------------------------------------------------
+# Strict Error Handling
+# -----------------------------------------------------------------------------
+set -euo pipefail
 
-# Configuration
-NUM_GPUS="${1:-2}"  # Default to 2 GPUs
-CONFIG_FILE="${2:-config.yaml}"
+# -----------------------------------------------------------------------------
+# Configuration & Defaults
+# -----------------------------------------------------------------------------
+DEFAULT_NUM_GPUS=2
+DEFAULT_CONFIG="config.yaml"
+CACHE_DIR="./data/pretraining_cache"
+LOG_FILE="training_phase1.log"
 
-# Calculate optimal OMP_NUM_THREADS
-# Formula: nb_cpu_threads / nproc_per_node
-NUM_CPU_THREADS=$(nproc)
-OMP_NUM_THREADS=$((NUM_CPU_THREADS / NUM_GPUS))
+# Arguments
+NUM_GPUS="${1:-$DEFAULT_NUM_GPUS}"
+CONFIG_FILE="${2:-$DEFAULT_CONFIG}"
 
-# Ensure at least 1 thread
-if [ "$OMP_NUM_THREADS" -lt 1 ]; then
-    OMP_NUM_THREADS=1
+# -----------------------------------------------------------------------------
+# Logging Helper
+# -----------------------------------------------------------------------------
+log() {
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    local level="$1"
+    shift
+    local message="$*"
+    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+}
+
+# -----------------------------------------------------------------------------
+# Pre-flight Checks
+# -----------------------------------------------------------------------------
+log "INFO" "Starting Phase 1 Training Workflow"
+log "INFO" "Configuration: GPUs=$NUM_GPUS, Config=$CONFIG_FILE"
+
+if ! command -v uv &> /dev/null; then
+    log "ERROR" "'uv' tool is not installed. Please install it first."
+    exit 1
 fi
 
-echo "=============================================="
-echo "Chroma-MoE Phase 1 Training"
-echo "=============================================="
-echo "CPU Threads: $NUM_CPU_THREADS"
-echo "GPUs: $NUM_GPUS"
-echo "OMP_NUM_THREADS: $OMP_NUM_THREADS"
-echo "Config: $CONFIG_FILE"
-echo "=============================================="
+if [ ! -f "$CONFIG_FILE" ]; then
+    log "ERROR" "Configuration file '$CONFIG_FILE' not found."
+    exit 1
+fi
 
-uv run python octo_embedding_model/get_wikipedia_data.py --max-pages 50000
+# -----------------------------------------------------------------------------
+# Resource Optimization
+# -----------------------------------------------------------------------------
+NUM_CPU_THREADS=$(nproc)
+OMP_THREADS=$((NUM_CPU_THREADS / NUM_GPUS))
+# Ensure at least 1 thread
+[ "$OMP_THREADS" -lt 1 ] && OMP_THREADS=1
 
-# Export environment variables
-export OMP_NUM_THREADS=$OMP_NUM_THREADS
-export TOKENIZERS_PARALLELISM=false  # Avoid tokenizers warning
+log "INFO" "System Resources: CPU Threads=$NUM_CPU_THREADS"
+log "INFO" "Optimization: Setting OMP_NUM_THREADS=$OMP_THREADS"
 
-# Run training
-uv run torchrun \
+export OMP_NUM_THREADS=$OMP_THREADS
+export TOKENIZERS_PARALLELISM=false
+
+# -----------------------------------------------------------------------------
+# Step 1: Data Preparation
+# -----------------------------------------------------------------------------
+log "INFO" "Step 1/2: Preparing Datasets..."
+
+# 1.1 Extract Wikipedia Data
+log "INFO" "Running Wikipedia extraction (get_wikipedia_data.py)..."
+if ! uv run python octo_embedding_model/get_wikipedia_data.py --max-pages 50000; then
+    log "ERROR" "Wikipedia extraction failed."
+    exit 1
+fi
+
+# 1.2 Download External Datasets (HuggingFace)
+log "INFO" "Downloading/Verifying external datasets (download_datasets.py)..."
+if ! uv run python octo_embedding_model/download_datasets.py \
+    --config "$CONFIG_FILE" \
+    --output-dir "$CACHE_DIR"; then
+    log "ERROR" "Dataset download failed."
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Step 2: Training Execution
+# -----------------------------------------------------------------------------
+log "INFO" "Step 2/2: Starting Distributed Training..."
+
+CMD="uv run torchrun \
     --nproc_per_node=$NUM_GPUS \
     octo_embedding_model/train_phase1.py \
-    --config $CONFIG_FILE
+    --config $CONFIG_FILE \
+    --local-data $CACHE_DIR"
+
+log "INFO" "Executing: $CMD"
+
+if $CMD; then
+    log "INFO" "Training completed successfully."
+else
+    log "ERROR" "Training failed."
+    exit 1
+fi

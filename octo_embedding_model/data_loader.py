@@ -540,6 +540,75 @@ class StreamingPreTrainingDataset(torch.utils.data.IterableDataset):
                     exhausted[i] = True
 
 
+class LocalPreTrainingDataset(torch.utils.data.IterableDataset):
+    """
+    Load pre-training data from locally cached Parquet files.
+    
+    This dataset reads from files created by download_datasets.py,
+    enabling offline training without network dependency.
+    """
+
+    def __init__(
+        self,
+        cache_dir: str = "./data/pretraining_cache",
+        max_samples_per_source: int = 3000000,
+        debug: bool = False,
+    ):
+        self.cache_dir = Path(cache_dir)
+        self.debug = debug
+        self.max_samples = 1000 if debug else max_samples_per_source
+        
+        # Check which files exist
+        self.available_files = []
+        for fname in ["finance.parquet", "ecommerce.parquet", "generic.parquet"]:
+            fpath = self.cache_dir / fname
+            if fpath.exists():
+                self.available_files.append(fpath)
+        
+        if not self.available_files:
+            raise FileNotFoundError(
+                f"No cached data found in {cache_dir}. "
+                f"Run download_datasets.py first to download the data."
+            )
+        
+        # Estimate total size
+        self._estimated_size = self.max_samples * len(self.available_files)
+        
+    def __len__(self) -> int:
+        """Estimated size for progress bars."""
+        return self._estimated_size
+    
+    def _stream_parquet(self, file_path: Path):
+        """Stream texts from a Parquet file."""
+        count = 0
+        try:
+            parquet_file = pq.ParquetFile(file_path)
+            for batch in parquet_file.iter_batches(batch_size=1000, columns=["text"]):
+                for text in batch.to_pydict()["text"]:
+                    if text and len(text) > 20:
+                        yield {"text": text}
+                        count += 1
+                        if count >= self.max_samples:
+                            return
+        except Exception:
+            pass
+    
+    def __iter__(self):
+        """Interleave all cached sources for balanced training."""
+        sources = [self._stream_parquet(f) for f in self.available_files]
+        
+        # Round-robin interleaving
+        exhausted = [False] * len(sources)
+        while not all(exhausted):
+            for i, source in enumerate(sources):
+                if exhausted[i]:
+                    continue
+                try:
+                    yield next(source)
+                except StopIteration:
+                    exhausted[i] = True
+
+
 class ContrastiveDataset(Dataset):
     """Dataset for Phase 2 contrastive training."""
 
@@ -1016,6 +1085,34 @@ def create_streaming_pretraining_dataset(
     
     return StreamingPreTrainingDataset(
         config=config,
+        max_samples_per_source=max_samples,
+        debug=debug,
+    )
+
+
+def create_local_pretraining_dataset(
+    config: dict[str, Any],
+    cache_dir: str = "./data/pretraining_cache",
+    debug: bool = False,
+) -> LocalPreTrainingDataset:
+    """
+    Create pre-training dataset from locally cached files.
+    
+    Reads from Parquet files created by download_datasets.py,
+    enabling offline training without network dependency.
+    
+    Args:
+        config: Data configuration dict
+        cache_dir: Path to directory containing cached Parquet files
+        debug: If True, use smaller sample limit for testing
+    """
+    max_samples = config.get("max_samples_per_dataset", 3000000)
+    
+    print(f"\n=== Creating Local Dataset from {cache_dir} ===")
+    print(f"Max samples per source: {max_samples:,}")
+    
+    return LocalPreTrainingDataset(
+        cache_dir=cache_dir,
         max_samples_per_source=max_samples,
         debug=debug,
     )

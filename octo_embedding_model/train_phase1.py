@@ -41,11 +41,13 @@ from transformers import AutoTokenizer
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from octo_embedding_model.data_loader import (
+    LocalPreTrainingDataset,
     PackedSpanMaskingCollator,
     PreTrainingDataset,
     SpanMaskingCollator,
     StreamingPreTrainingDataset,
     create_combined_pretraining_dataset,
+    create_local_pretraining_dataset,
     create_streaming_pretraining_dataset,
 )
 from octo_embedding_model.model_architecture import ChromaConfig, ChromeMoEModel
@@ -323,6 +325,12 @@ def main():
         default=-1,
         help="Local rank for distributed training",
     )
+    parser.add_argument(
+        "--local-data",
+        type=str,
+        default=None,
+        help="Path to local pre-downloaded data cache (from download_datasets.py)",
+    )
     args = parser.parse_args()
 
     # Load configuration
@@ -433,14 +441,24 @@ def main():
     if is_ddp:
         model = wrap_model_ddp(model, local_rank)
 
-    # Create dataset (streaming for fast start)
-    if rank == 0:
-        logger.info("Creating streaming dataset (training starts immediately)...")
-
+    # Create dataset
     debug_mode = config.get("active_model_profile") == "debug"
     use_streaming = config.get("data", {}).get("streaming", True)  # Default to streaming
     
-    if use_streaming:
+    # Check for local data cache first (from download_datasets.py)
+    if args.local_data:
+        if rank == 0:
+            logger.info(f"Loading from local cache: {args.local_data}")
+        dataset = create_local_pretraining_dataset(
+            config.get("data", {}),
+            cache_dir=args.local_data,
+            debug=debug_mode,
+        )
+        # IterableDataset doesn't support DistributedSampler
+        sampler = None
+    elif use_streaming:
+        if rank == 0:
+            logger.info("Creating streaming dataset (training starts immediately)...")
         dataset = create_streaming_pretraining_dataset(
             config.get("data", {}),
             debug=debug_mode,
@@ -448,6 +466,8 @@ def main():
         # IterableDataset doesn't support DistributedSampler
         sampler = None
     else:
+        if rank == 0:
+            logger.info("Loading full dataset into memory...")
         dataset = create_combined_pretraining_dataset(
             config.get("data", {}),
             tokenizer=tokenizer,

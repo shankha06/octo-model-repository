@@ -168,6 +168,9 @@ data:
   # Use streaming for fast training start (no delay loading data)
   streaming: false
   
+  # Local cache directory for pre-downloaded data (from download_datasets.py)
+  local_cache: "./data/pretraining_cache"
+  
   # Global max samples per dataset (3M default)
   max_samples_per_dataset: 1000
 
