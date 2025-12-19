@@ -72,7 +72,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-torch._inductor.config.max_autotune_gemm = False
+# torch._inductor.config.max_autotune_gemm = False
 
 
 
@@ -107,6 +107,13 @@ class ChromaMoEForPretraining(nn.Module):
         
         Returns dict with 'loss' and optionally 'logits'.
         """
+        # --- CHECK 1: Vocab Size Safety (The "Invisible" Killer) ---
+        # If input_ids are outside vocab range, Embedding returns NaNs on GPU.
+        if input_ids.max() >= self.config.vocab_size:
+            raise ValueError(
+                f"Input ID {input_ids.max()} exceeds vocab size {self.config.vocab_size}. "
+                "Mismatch between Tokenizer and Model Config!"
+            )
         # Get backbone hidden states (before pooling)
         x = self.backbone.embed_tokens(input_ids)
 
@@ -119,9 +126,12 @@ class ChromaMoEForPretraining(nn.Module):
                 attention_mask = torch.ones_like(input_ids)
 
             extended_mask = attention_mask[:, None, None, :]
-            extended_mask = (1.0 - extended_mask) * -10000.0
+            extended_mask = (1.0 - extended_mask) * torch.tensor(-1e4, dtype=x.dtype, device=x.device)
 
-        for layer in self.backbone.layers:
+        # --- FIX 1: Initialize the list to store router logits ---
+        all_router_logits = []
+
+        for i, layer in enumerate(self.backbone.layers):
             residual = x
             x_norm = layer["norm1"](x)
             attn_out = layer["attn"](
@@ -136,32 +146,44 @@ class ChromaMoEForPretraining(nn.Module):
             residual = x
             x_norm = layer["norm2"](x)
             
-            # --- FIX START ---
-            # Capture both output and logits. 
-            # Note: Ensure your backbone's MoE layer returns (output, logits)
             moe_result = layer["moe"](x_norm)
             
+            # --- FIX 2: Correctly capture logits ---
             if isinstance(moe_result, tuple):
                 moe_out = moe_result[0]
-                # Collect logits (usually [batch_size*seq_len, num_experts])
-                all_router_logits.append(moe_result[1])
+                # Shape: [batch_size * seq_len, num_experts]
+                all_router_logits.append(moe_result[1]) 
             else:
+                # --- CRITICAL: Do not fail silently ---
+                # If we expect MoE training, we MUST get logits.
+                # If this prints, your Aux Loss is 0, and Router collapses.
+                if i == 0: 
+                     print(f"WARNING: Layer {i} MoE did not return logits! Aux Loss will be 0.")
                 moe_out = moe_result
-                # If logits are missing, we can't calculate aux loss
             
             x = residual + moe_out
-            # --- FIX END ---
 
         hidden_states = self.backbone.norm_final(x)
-
-        # MLM head
         logits = self.mlm_head(hidden_states)
 
         output = {"logits": logits}
 
+        # --- FIX 3: Add router logits to output for Aux Loss calculation ---
+        if all_router_logits:
+            # Stack layers to get [num_layers, batch*seq, num_experts]
+            # or cat them depending on your MoEAuxLoss expectation.
+            # Usually concatenating all tokens across all layers is safest for simple AuxLoss:
+            output["router_logits"] = torch.cat(all_router_logits, dim=0)
+
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(logits.view(-1, self.config.vocab_size), labels.view(-1))
+            # --- FIX: Cast to float32 is MANDATORY for stability ---
+            # .view(...) creates a view, .float() casts it.
+            # This prevents internal Softmax overflow in CrossEntropyLoss
+            loss = loss_fct(
+                logits.view(-1, self.config.vocab_size).float(), 
+                labels.view(-1)
+            )
             output["loss"] = loss
 
         return output
@@ -276,15 +298,24 @@ def train_epoch(
             
             total_loss = outputs["loss"]
 
-            # 3. ADD MISSING AUX LOSS
-            # We assume the model returns 'router_logits' in outputs needed for the loss
+            # --- FIX 4: Robust Aux Loss Calculation ---
             if aux_loss_fn is not None and "router_logits" in outputs:
-                aux_loss = aux_loss_fn(outputs["router_logits"])
-                total_loss += aux_loss
-            elif aux_loss_fn is not None:
-                # Warning: Your model forward pass needs to return router_logits!
-                # If ChromaMoEModel doesn't expose them, you need to modify it.
-                pass
+                # Ensure router logits are float32 to prevent underflow in softmax/exp
+                router_logits = outputs["router_logits"].float()
+                aux_loss = aux_loss_fn(router_logits)
+
+                # --- DEBUG CHECK ---
+                if torch.isnan(router_logits).any():
+                    print("NaN in Router Logits! Inputs to router were likely NaN.")
+                # -------------------
+                
+                # 3. --- FIX: Add Router Z-Loss ---
+                # This penalizes large logits to prevent numerical explosion
+                # Recommended coefficient is usually 1e-3 to 1e-4
+                z_loss_coef = 1e-3
+                z_loss = torch.logsumexp(router_logits, dim=-1).pow(2).mean() * z_loss_coef
+                
+                total_loss += aux_loss + z_loss
 
         # Scale loss for gradient accumulation
         loss = total_loss / grad_accum_steps
@@ -380,6 +411,10 @@ def main():
 
     # Load configuration
     config = load_config(args.config)
+
+    # --- DEBUG: Enable Anomaly Detection ---
+    torch.autograd.set_detect_anomaly(True) 
+    # ---------------------------------------
 
     # Determine if running in distributed mode
     is_ddp = int(os.environ.get("WORLD_SIZE", 1)) > 1
@@ -477,10 +512,10 @@ def main():
         logger.info(f"Total parameters: {total_params / 1e6:.2f}M")
         
     # Enable torch.compile for faster training (PyTorch 2.0+)
-    if config.get("training", {}).get("torch_compile", True) and hasattr(torch, "compile"):
+    if False and hasattr(torch, "compile"):
         if rank == 0:
             logger.info("Compiling model with torch.compile...")
-        model = torch.compile(model, mode="max-autotune")
+        model = torch.compile(model)
 
     # Wrap with DDP
     if is_ddp:

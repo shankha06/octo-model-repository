@@ -308,7 +308,7 @@ class MoELayer(nn.Module):
             pass 
             
         # Combining Shared + Routed
-        return shared_out + final_out # + identity is handled in block
+        return shared_out + final_out, router_logits # + identity is handled in block
 
 class LatentAttentionPooling(nn.Module):
     """
@@ -386,8 +386,21 @@ class ChromeMoEModel(nn.Module):
         # Pre-Norm -> MoE -> Residual
         residual = x
         x_norm = layer["norm2"](x)
-        moe_out = layer["moe"](x_norm)
+
+        # --- FIX START ---
+        moe_result = layer["moe"](x_norm)
+        
+        # Handle both Tuple (Training) and Tensor (Inference compatibility)
+        if isinstance(moe_result, tuple):
+            moe_out = moe_result[0]
+            # We ignore logits here because this method is used by the backbone wrapper,
+            # but your Training Loop accesses layer["moe"] directly anyway.
+        else:
+            moe_out = moe_result
+            
         x = residual + moe_out
+        # --- FIX END ---
+        
         return x
         
     def forward(self, input_ids, attention_mask=None, cu_seqlens=None, max_seqlen=None):

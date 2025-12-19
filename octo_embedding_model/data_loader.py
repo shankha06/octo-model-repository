@@ -134,7 +134,8 @@ class SpanMaskingCollator:
         encoded = self.tokenizer(
             texts,
             max_length=self.max_length,
-            padding="max_length",
+            padding=True,  # Pad to longest (dynamic)
+            pad_to_multiple_of=64,  # Pad to multiple of 64 for torch.compile
             truncation=True,
             return_tensors="pt",
         )
